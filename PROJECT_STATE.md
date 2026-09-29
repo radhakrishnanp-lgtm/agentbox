@@ -7,6 +7,7 @@ Updated 2026-09-29. Plan: `MASTER_PLAN.md` (in the project files).
 | #   | Milestone                                                                          | State    |
 | --- | ---------------------------------------------------------------------------------- | -------- |
 | 1   | Foundation: setup link, passkey, TOTP, recovery codes, sessions, audit log, web UI | **Done** |
+| 1b  | Key gateway: AI keys stay on the VPS, machines get a revocable pass                | **Done** |
 | 2   | Web terminal over tmux (agentbox-termd as `dev`)                                   | Next     |
 | 3   | Device approval with number matching, sessions list, IP re-check, fail2ban         | Planned  |
 | 4   | GPU nodes: enrollment, connect.sh, tunnel-keys, tunnelctl, sshd test in CI         | Planned  |
@@ -18,7 +19,7 @@ Updated 2026-09-29. Plan: `MASTER_PLAN.md` (in the project files).
 
 ```sh
 pnpm install
-pnpm check                      # format, lint, typecheck, 58 unit/integration tests
+pnpm check                      # format, lint, typecheck, unit/integration tests
 pnpm --filter @agentbox/web build
 PLAYWRIGHT_CHROMIUM_PATH=/path/to/chromium pnpm test:e2e   # real browser + virtual passkey
 ```
@@ -45,6 +46,21 @@ Known gaps carried forward:
 - Web bundle is ~500 KB (154 KB gzipped) because Zod validation is shared with the browser.
 - Recovery codes can't be regenerated from the UI yet (Milestone 3).
 - Approving a new device from an already signed-in device comes in Milestone 3; today it's passkey + TOTP.
+
+## Key gateway test record (2026-09-29)
+
+Installed in the Ubuntu 24.04 lab in Caddy mode over HTTPS, with an HTTPS stand-in provider that records what it receives. A machine user ran `curl … /machine.sh | sh`, then each real CLI:
+
+| CLI                                        | Result                                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code 2.1.284                        | Answer streamed back; provider got the real key in `x-api-key`, never the pass.                                          |
+| Codex 0.159                                | Answer over `/v1/responses`; usage counted.                                                                              |
+| Official xAI grok and open-source Grok CLI | Both answered; `/v1/models` and `/v1/api-key` passed through.                                                            |
+| Kimi Code 2.1.1                            | Answer over `/v1/chat/completions` with the key's model.                                                                 |
+| Gemini CLI 0.61                            | Answer over `generateContent` and `streamGenerateContent` (SSE).                                                         |
+| All, after Stop                            | Refused at once with "this machine was stopped in agentbox" (403, so Claude Code no longer retries a 401 for 3 minutes). |
+
+The provider log never contained `abx_`. Recipes were first checked in an isolated network namespace, which showed no other traffic (telemetry, update checks, stored logins). Not covered: real provider endpoints (no real keys were used) and interactive TUIs in the lab (checked only in the isolated runner).
 
 ## Installer test record (2026-09-29)
 

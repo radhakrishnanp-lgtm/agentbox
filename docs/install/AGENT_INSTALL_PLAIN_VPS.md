@@ -96,6 +96,8 @@ Tell the owner, word for word:
 > Open the link it prints on the phone or computer where you want your passkey. It works once, for 30 minutes. You'll create a passkey, scan a QR code with an authenticator app, and save 10 recovery codes somewhere safe.
 >
 > Please back up `/etc/agentbox/secrets.env` and `/var/lib/agentbox` together, somewhere off this server.
+>
+> To use claude, codex, grok, kimi or gemini directly on another computer without keeping keys there, open agentbox → Machines, add your AI keys, then add a machine and follow the steps it shows (docs/MACHINES.md in the repository).
 
 ## Step 7: report
 

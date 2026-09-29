@@ -23,9 +23,28 @@ const LABELS: Record<string, string> = {
   'session.expired': 'Session ended',
   'passkey.added': 'Passkey added',
   'passkey.removed': 'Passkey removed',
+  'ai_key.added': 'AI key added',
+  'ai_key.removed': 'AI key removed',
+  'machine.added': 'Machine added',
+  'machine.updated': 'Machine changed',
+  'machine.revoked': 'Machine stopped',
+  'machine.revoked_all': 'All machines stopped',
+  'machine.first_used': 'Machine used for the first time',
+  'machine.ip_changed': 'Machine used from a new address',
+  'machine.blocked_ip': 'Machine pass used from a blocked address',
+  'machine.limit_hit': 'Machine reached a limit',
+  'machine.bad_pass_lockout': 'Address locked after wrong machine passes',
 };
 
-const WARN = new Set(['auth.login_failed', 'auth.lockout', 'auth.recovery_used', 'setup.reset']);
+const WARN = new Set([
+  'auth.login_failed',
+  'auth.lockout',
+  'auth.recovery_used',
+  'setup.reset',
+  'machine.ip_changed',
+  'machine.blocked_ip',
+  'machine.bad_pass_lockout',
+]);
 
 function describe(e: AuditEntry): string {
   const d = e.details;

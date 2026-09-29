@@ -25,3 +25,4 @@ await build({
   logLevel: process.env.CI ? 'warning' : 'info',
 });
 cpSync('migrations', 'dist/migrations', { recursive: true });
+cpSync('src/gateway/machine.sh', 'dist/machine.sh');

@@ -2,7 +2,17 @@
 
 A self-hosted gateway that keeps your AI coding CLI logins (Claude Code, Grok, Kimi and others) on one VPS you control. You reach them from any browser through a web terminal protected by passkeys, and GPU servers join through locked-down reverse SSH tunnels that never see your AI credentials.
 
-**Status:** Milestone 1 of 7 is done (setup, passkey sign-in, authenticator app, recovery codes, sessions, audit log, web UI), and the installer is ready. The web terminal comes next. See [PROJECT_STATE.md](PROJECT_STATE.md).
+**Status:** Milestone 1 of 7 is done (setup, passkey sign-in, authenticator app, recovery codes, sessions, audit log, web UI), the installer is ready, and so is the key gateway below. The web terminal comes next. See [PROJECT_STATE.md](PROJECT_STATE.md).
+
+## Use the AI CLIs directly on any computer
+
+Add your AI keys to agentbox once, then run one command on a GPU server or laptop:
+
+```sh
+curl -fsSL https://agent.example.com/machine.sh | sh
+```
+
+After that, `claude`, `codex`, `grok`, `kimi` and `gemini` work there as usual, but the computer only holds an agentbox pass that you can stop from your phone. The real keys never leave the VPS. See [docs/MACHINES.md](docs/MACHINES.md).
 
 ## Install
 

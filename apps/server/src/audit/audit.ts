@@ -30,7 +30,18 @@ export type AuditAction =
   | 'auth.lockout'
   | 'session.expired'
   | 'passkey.added'
-  | 'passkey.removed';
+  | 'passkey.removed'
+  | 'ai_key.added'
+  | 'ai_key.removed'
+  | 'machine.added'
+  | 'machine.updated'
+  | 'machine.revoked'
+  | 'machine.revoked_all'
+  | 'machine.first_used'
+  | 'machine.ip_changed'
+  | 'machine.blocked_ip'
+  | 'machine.limit_hit'
+  | 'machine.bad_pass_lockout';
 
 export interface AuditInput {
   actor: string;

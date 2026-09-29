@@ -57,6 +57,9 @@ export async function registerSecurity(app: FastifyInstance, config: Config): Pr
       reply.header('Cache-Control', 'no-store');
     }
     if (SAFE_METHODS.has(request.method)) return;
+    // The key gateway is called by CLIs, not browsers. It takes no cookies and
+    // authenticates every request with a machine pass instead.
+    if (request.url.startsWith('/gw/')) return;
 
     const origin = request.headers.origin;
     const fetchSite = request.headers['sec-fetch-site'];

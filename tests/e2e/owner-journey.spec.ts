@@ -2,13 +2,62 @@
  * The owner's first-day journey in a real browser, with Chrome's virtual
  * authenticator standing in for a phone's passkey:
  * setup link → passkey → authenticator app → recovery codes → home →
- * sign out → passkey sign-in → a second browser approved with TOTP.
+ * sign out → passkey sign-in → a second browser approved with TOTP →
+ * add an AI key and a machine → set the machine up with the real setup
+ * script → its `claude` command reaches a stand-in provider with the real key
+ * → stop the machine and watch the command get refused.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
 import { TOTP } from 'otpauth';
-import { e2eEnv } from './env.ts';
+import { FakeProvider } from '../../apps/server/test/helpers/fake-provider.ts';
+import { E2E_ORIGIN, e2eEnv } from './env.ts';
+
+const REAL_KEY = 'sk-ant-api03-E2E-REAL-KEY-never-leaves-agentbox-wxyz';
+
+/**
+ * A throwaway "machine": its own HOME, plus a stand-in `claude` that does
+ * what Claude Code does with ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN.
+ */
+function makeMachine() {
+  const home = mkdtempSync(join(tmpdir(), 'agentbox-machine-'));
+  const tools = join(home, 'tools');
+  execFileSync('mkdir', ['-p', tools]);
+  writeFileSync(
+    join(tools, 'claude'),
+    [
+      '#!/bin/sh',
+      'curl -sS -X POST "$ANTHROPIC_BASE_URL/v1/messages" \\',
+      '  -H "authorization: Bearer $ANTHROPIC_AUTH_TOKEN" -H "content-type: application/json" \\',
+      '  -H "anthropic-version: 2023-06-01" \\',
+      `  -d '{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(join(tools, 'claude'), 0o755);
+  const env = {
+    HOME: home,
+    SHELL: '/bin/bash',
+    PATH: `${tools}:/usr/local/bin:/usr/bin:/bin`,
+  };
+  // Async on purpose: the stand-in provider runs in this process and must keep answering.
+  const sh = async (script: string, extra: Record<string, string> = {}) =>
+    (
+      await promisify(execFile)('/bin/sh', ['-c', script], {
+        env: { ...env, ...extra },
+        encoding: 'utf8',
+        timeout: 20_000,
+      })
+    ).stdout;
+  const cleanup = () => {
+    rmSync(home, { recursive: true, force: true });
+  };
+  return { home, env, sh, cleanup };
+}
 
 function setupLink(): string {
   const out = execFileSync(
@@ -51,6 +100,7 @@ function watchConsole(page: Page): string[] {
 }
 
 test('owner sets up agentbox and signs in on two devices', async ({ browser }) => {
+  test.setTimeout(120_000);
   const link = setupLink();
 
   // ── Device 1: setup ─────────────────────────────────────────────
@@ -150,6 +200,84 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await expect(page.getByText('Device approved')).toBeVisible();
   await page.getByRole('button', { name: 'Check integrity' }).click();
   await expect(page.getByText('Log is intact')).toBeVisible();
+
+  // ── Machines: keep the key here, give a computer a pass ────────
+  const provider = await new FakeProvider().start();
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .first()
+    .getByRole('link', { name: 'Machines' })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Machines', level: 1 })).toBeVisible();
+  await page.getByRole('button', { name: 'Add' }).nth(1).click(); // AI keys → Add
+  await page.getByLabel('Key', { exact: true }).fill(REAL_KEY);
+  await page.getByLabel('Provider address').fill(provider.url);
+  await page.getByRole('button', { name: 'Save key' }).click();
+  await expect(page.getByText('ends in ••••wxyz')).toBeVisible();
+  await expect(page.getByText(REAL_KEY)).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Add' }).first().click(); // Machines → Add
+  await page.getByLabel('Name', { exact: true }).fill('e2e-gpu');
+  await page.getByRole('button', { name: 'Create pass' }).click();
+  await expect(page.getByRole('heading', { name: 'Set up “e2e-gpu”' })).toBeVisible();
+  const pass = (await page.locator('code').filter({ hasText: /^abx_/ }).innerText()).trim();
+  expect(pass).toMatch(/^abx_[A-Za-z0-9_-]{43}$/);
+  await expect(page.getByText(`curl -fsSL ${E2E_ORIGIN}/machine.sh | sh`)).toBeVisible();
+
+  const machine = makeMachine();
+  try {
+    const setupOut = await machine.sh(`curl -fsSL ${E2E_ORIGIN}/machine.sh | sh`, {
+      AGENTBOX_PASS: pass,
+    });
+    expect(setupOut).toContain('This computer is set up as "e2e-gpu"');
+    expect(setupOut).toContain('claude: ready');
+    const bin = join(machine.home, '.local/share/agentbox/bin');
+    // A new login shell picks up the PATH line, and `claude` now goes through agentbox.
+    const answer = await machine.sh(`. "$HOME/.profile"; command -v claude; claude -p hi`);
+    expect(answer).toContain(`${bin}/claude`);
+    expect(answer).toContain('Hello from the fake provider');
+    const seen = provider.last();
+    expect(seen.headers['x-api-key']).toBe(REAL_KEY);
+    expect(JSON.stringify(seen.headers)).not.toContain(pass);
+    // The pass file is private to the machine's user, and no key was written anywhere.
+    expect(await machine.sh('ls -l "$HOME/.config/agentbox/pass"')).toMatch(/^-rw-------/);
+    expect(await machine.sh('grep -rl "E2E-REAL-KEY" "$HOME" || true')).toBe('');
+
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.reload();
+    await expect(page.getByText('Active')).toBeVisible();
+    await expect(page.getByText(/today 1 requests, 15 tokens/)).toBeVisible();
+
+    // Stop it: the same command is refused at once.
+    await page.getByRole('button', { name: 'Stop', exact: true }).click();
+    await page.getByRole('button', { name: 'Stop machine' }).click();
+    await expect(page.getByText('Stopped', { exact: true })).toBeVisible();
+    const refused = await machine.sh(`. "$HOME/.profile"; claude -p hi`);
+    expect(refused).toContain('agentbox: this machine was stopped in agentbox.');
+
+    const status = await machine
+      .sh(`"$HOME/.local/share/agentbox/bin/agentbox-machine" status`)
+      .catch((err: unknown) => String((err as { stderr?: string }).stderr ?? err));
+    expect(status).toContain('stopped');
+    await machine.sh(`"$HOME/.local/share/agentbox/bin/agentbox-machine" uninstall`);
+    // Nothing of agentbox is left behind: no pass, no wrappers, no PATH line.
+    expect(
+      await machine.sh(
+        'ls -A "$HOME/.config" "$HOME/.local/share"; grep -c agentbox "$HOME/.profile" || true',
+      ),
+    ).toBe(`${machine.home}/.config:
+
+${machine.home}/.local/share:
+0
+`);
+  } finally {
+    machine.cleanup();
+    await provider.stop();
+  }
+
+  await page.goto('/activity');
+  await expect(page.getByText('Machine used for the first time')).toBeVisible();
+  await expect(page.getByText('Machine stopped')).toBeVisible();
 
   expect(problems, 'console errors on device 1').toEqual([]);
   expect(phoneProblems, 'console errors on device 2').toEqual([]);

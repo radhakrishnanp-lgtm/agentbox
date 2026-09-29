@@ -4,6 +4,7 @@ import { BrandMark } from './components/Brand.tsx';
 import { navigate, usePath } from './lib/router.ts';
 import { Activity } from './screens/Activity.tsx';
 import { Home } from './screens/Home.tsx';
+import { Machines } from './screens/Machines.tsx';
 import { Security } from './screens/Security.tsx';
 import { SetupWizard } from './screens/SetupWizard.tsx';
 import { Recovery, SignIn } from './screens/SignIn.tsx';
@@ -12,6 +13,7 @@ import { useAuth } from './state/auth.tsx';
 
 const SIGNED_IN_SCREENS: Record<string, () => React.JSX.Element> = {
   '/': Home,
+  '/machines': Machines,
   '/security': Security,
   '/activity': Activity,
 };
