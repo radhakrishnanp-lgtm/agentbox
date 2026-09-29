@@ -50,6 +50,31 @@ export function mountPoints(mountinfo: string): { point: string; fstype: string 
     });
 }
 
+/**
+ * Turns a failed mount into a message the owner can act on. gocryptfs and
+ * fusermount3 output never contains the password.
+ */
+export function explainMountFailure(what: string, output: string): string {
+  const lines = output
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // fusermount3's own line says why a mount was refused; otherwise the last line.
+  const last = (lines.find((l) => /^fusermount3?:/.test(l)) ?? lines.at(-1))?.slice(0, 300);
+  const detail = last ? `${what}: ${last}` : what;
+  if (/fusermount3?:.*(permission denied|operation not permitted)/i.test(output)) {
+    return (
+      `Could not unlock the vault (${detail}). The system blocked the mount, usually ` +
+      "Ubuntu's AppArmor profile for fusermount3. Re-run the agentbox installer, which allows " +
+      'the vault folder in that profile.'
+    );
+  }
+  if (/\/dev\/fuse/i.test(output)) {
+    return `Could not unlock the vault (${detail}). This server can't use FUSE (/dev/fuse).`;
+  }
+  return `Could not unlock the vault (${detail}).`;
+}
+
 export class Vault {
   readonly #config: TermdConfig;
   readonly #env: NodeJS.ProcessEnv;
@@ -136,7 +161,7 @@ export class Vault {
     if (!this.isMounted()) {
       throw new VaultError(
         'internal',
-        `Could not unlock the vault (gocryptfs exit ${code ?? 'timeout'}). See ${this.#logPath()}.`,
+        explainMountFailure(`gocryptfs exit ${String(code ?? 'timeout')}`, this.#logTail()),
       );
     }
     this.#prepareHome();
@@ -159,7 +184,12 @@ export class Vault {
         timeoutMs: 60_000,
       });
       if (res.code === 12) throw new VaultError('wrong_password', 'That vault password is wrong.');
-      if (res.code !== 0) throw new VaultError('internal', 'Could not check the vault password.');
+      if (res.code !== 0) {
+        throw new VaultError(
+          'internal',
+          explainMountFailure(`gocryptfs exit ${String(res.code)}`, res.stderr),
+        );
+      }
       await run('fusermount3', ['-u', '-z', '--', probe], { env: this.#env, timeoutMs: 15_000 });
     } finally {
       rmdirSync(probe);
@@ -168,6 +198,15 @@ export class Vault {
 
   #logPath(): string {
     return join(dirname(this.#cipher()), 'gocryptfs.log');
+  }
+
+  /** The last lines gocryptfs wrote. It never logs the password. */
+  #logTail(): string {
+    try {
+      return readFileSync(this.#logPath(), 'utf8').split('\n').slice(-6).join('\n');
+    } catch {
+      return '';
+    }
   }
 
   /**

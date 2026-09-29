@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FrameDecoder, TERMD_FRAME, encodeFrame } from '@agentbox/shared/termd';
 import { loadTermdConfig, terminalEnv, type TermdConfig } from '../src/config.ts';
 import { Termd } from '../src/server.ts';
-import { mountPoints } from '../src/vault.ts';
+import { explainMountFailure, mountPoints } from '../src/vault.ts';
 
 const here = new URL('.', import.meta.url).pathname;
 const hasTmux = (() => {
@@ -334,5 +334,26 @@ describe.skipIf(!canFuse)('the vault (gocryptfs)', () => {
     expect(await request(config.socket, { op: 'overview' })).toMatchObject({
       vault: 'uninitialized',
     });
+  });
+});
+
+describe('vault mount errors', () => {
+  it('names an AppArmor-style mount denial and what fixes it', () => {
+    const msg = explainMountFailure(
+      'gocryptfs exit 19',
+      'fusermount3: mount failed: Permission denied\nfuse: mount failed',
+    );
+    expect(msg).toContain('fusermount3: mount failed: Permission denied');
+    expect(msg).toContain('AppArmor');
+    expect(msg).toContain('Re-run the agentbox installer');
+  });
+
+  it('keeps the last line of any other failure', () => {
+    expect(explainMountFailure('gocryptfs exit 6', 'something odd\nCipherdir is not empty\n')).toBe(
+      'Could not unlock the vault (gocryptfs exit 6: Cipherdir is not empty).',
+    );
+    expect(explainMountFailure('gocryptfs exit timeout', '')).toBe(
+      'Could not unlock the vault (gocryptfs exit timeout).',
+    );
   });
 });

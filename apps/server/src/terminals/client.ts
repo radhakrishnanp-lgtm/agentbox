@@ -31,7 +31,8 @@ export class TermdRefused extends Error {
       case 'limit':
         return new AppError('conflict', this.message);
       default:
-        return new AppError('internal', 'The terminal service hit an unexpected error.');
+        // termd's own messages never hold secrets, and they say what to fix.
+        return new AppError('internal', `The terminal service hit an error. ${this.message}`);
     }
   }
 }

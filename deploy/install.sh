@@ -286,6 +286,30 @@ id -nG agentbox | tr ' ' '\n' | grep -qx agentbox-term || usermod -aG agentbox-t
 # Root: FUSE mounts need /dev/fuse open to users (Ubuntu's default is 0666; some
 # containers ship it as root-only).
 if [[ -c /dev/fuse && "$(stat -c %a /dev/fuse)" != 666 ]]; then chmod 0666 /dev/fuse; fi
+# Ubuntu 25.04 and later confine fusermount3 with AppArmor, which only allows
+# FUSE mounts inside a home folder, /mnt, /media or /tmp: not on a home folder
+# itself, where the vault goes. Allow exactly the vault's mount points through
+# the profile's own local include, and leave the rest of the profile alone.
+AA_PROFILE=/etc/apparmor.d/fusermount3
+AA_LOCAL=/etc/apparmor.d/local/fusermount3
+if [[ -f "$AA_PROFILE" ]] && grep -q 'local/fusermount3' "$AA_PROFILE"; then
+  install -d -m 0755 /etc/apparmor.d/local
+  touch "$AA_LOCAL"
+  sed -i '/^# >>> agentbox >>>$/,/^# <<< agentbox <<<$/d' "$AA_LOCAL"
+  cat >>"$AA_LOCAL" <<AA
+# >>> agentbox >>>
+# The agentbox terminal vault ($TERM_HOME) and its password check ($VAULT_DIR/verify-*).
+mount fstype=@{fuse_types} options=(nosuid,nodev) options in (ro,rw,noatime,dirsync,nodiratime,noexec,sync) -> $TERM_HOME/,
+mount fstype=@{fuse_types} options=(nosuid,nodev) options in (ro,rw,noatime,dirsync,nodiratime,noexec,sync) -> $VAULT_DIR/verify-*/,
+umount $TERM_HOME/,
+umount $VAULT_DIR/verify-*/,
+# <<< agentbox <<<
+AA
+  if command -v apparmor_parser >/dev/null && [[ -d /sys/kernel/security/apparmor ]]; then
+    apparmor_parser -r "$AA_PROFILE" || die "AppArmor didn't accept the fusermount3 rules for the vault ($AA_LOCAL)."
+  fi
+  ok "AppArmor lets fusermount3 mount the vault at $TERM_HOME"
+fi
 ok "agentbox, agentbox-build, $TERM_USER (terminals), groups agentbox-sock and agentbox-term"
 
 # ── 3. Node.js 24 (verified download) ────────────────────────────────────
