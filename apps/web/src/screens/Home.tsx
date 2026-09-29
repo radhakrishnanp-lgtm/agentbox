@@ -27,12 +27,19 @@ export function Home() {
           <CardHeader
             icon={<SquareTerminal className="size-5" aria-hidden />}
             title="Terminals"
-            description="Your AI CLIs will run here, on this server, in persistent sessions."
-            action={<Badge>Next update</Badge>}
+            description="Your AI CLIs run here, on this server, in sessions that keep running."
+            action={
+              <Link
+                to="/terminals"
+                className="text-sm text-accent underline-offset-4 hover:underline"
+              >
+                Open
+              </Link>
+            }
           />
           <CardBody className="text-sm text-muted">
-            Claude Code, Grok and Kimi will sign in once on this server. No other machine ever holds
-            their tokens.
+            Install Claude Code, Grok, Kimi or any other CLI and sign in once. Their logins stay in
+            an encrypted vault on this server.
           </CardBody>
         </Card>
 

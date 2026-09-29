@@ -16,4 +16,13 @@ export const e2eEnv: Record<string, string> = {
   AGENTBOX_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
   AGENTBOX_SESSION_SECRET: 'e2e-session-secret-that-is-long-enough-000',
   LOG_LEVEL: 'warn',
+  AGENTBOX_TERMD_SOCKET: join(E2E_DATA_DIR, 'termd.sock'),
+};
+
+/** The terminal service for the e2e run: no vault, a throwaway home. */
+export const e2eTermdEnv: Record<string, string> = {
+  AGENTBOX_TERMD_SOCKET: join(E2E_DATA_DIR, 'termd.sock'),
+  AGENTBOX_TERMD_HOME: join(E2E_DATA_DIR, 'home'),
+  AGENTBOX_TERMD_VAULT: 'none',
+  AGENTBOX_TERMD_TMUX: 'agentbox-e2e',
 };

@@ -53,8 +53,15 @@ export function Button({
       {...(asChild ? {} : { type })}
       {...props}
     >
-      {loading ? <LoaderCircle aria-hidden className="size-4 animate-spin" /> : null}
-      {children}
+      {/* Slot needs exactly one child, so a link-styled button never shows the spinner. */}
+      {asChild ? (
+        children
+      ) : (
+        <>
+          {loading ? <LoaderCircle aria-hidden className="size-4 animate-spin" /> : null}
+          {children}
+        </>
+      )}
     </Comp>
   );
 }
