@@ -279,7 +279,8 @@ fi
 install -d -m 0755 "$ETC"
 echo "$TERM_USER" >"$ETC/term-user"
 # While the vault is unlocked, its home is a mount that only that user can open.
-mountpoint -q "$TERM_HOME" || install -d -m 0700 -o "$TERM_USER" -g "$TERM_USER" "$TERM_HOME"
+# (findmnt reads the mount table; even root can't look inside the mount itself.)
+findmnt -rno TARGET --mountpoint "$TERM_HOME" >/dev/null || install -d -m 0700 -o "$TERM_USER" -g "$TERM_USER" "$TERM_HOME"
 install -d -m 0700 -o "$TERM_USER" -g "$TERM_USER" "$VAULT_DIR"
 id -nG agentbox | tr ' ' '\n' | grep -qx agentbox-term || usermod -aG agentbox-term agentbox
 # Root: FUSE mounts need /dev/fuse open to users (Ubuntu's default is 0666; some
