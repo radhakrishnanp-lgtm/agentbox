@@ -134,6 +134,7 @@ export class Termd {
 
   #fail(err: unknown): { ok: false; error: { code: TermdErrorCode; message: string } } {
     if (err instanceof TermdError || err instanceof VaultError) {
+      if (err.code === 'internal') this.#log('error', 'request failed', { err: err.message });
       return { ok: false, error: { code: err.code, message: err.message } };
     }
     this.#log('error', 'request failed', { err: err instanceof Error ? err.message : String(err) });

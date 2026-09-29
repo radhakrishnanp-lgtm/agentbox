@@ -54,8 +54,9 @@ browser ──wss──▶ agentbox-web ──unix socket──▶ agentbox-term
 
 ## Troubleshooting
 
-| Problem                                            | What to do                                                                                                    |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| "The terminal service isn't running"               | `sudo agentbox status`, then `sudo agentbox logs`.                                                            |
-| Unlock fails with "fusermount … Permission denied" | `/dev/fuse` must be mode 0666 (Ubuntu's default). The installer fixes this; re-run it.                        |
-| Forgot the vault password                          | There is no recovery. On the locked screen, choose "Forgot the password?" to delete the vault and start over. |
+| Problem                                                                      | What to do                                                                                                                                                           |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "The terminal service isn't running"                                         | `sudo agentbox status`, then `sudo agentbox logs`.                                                                                                                   |
+| Unlock fails with "fusermount … Permission denied"                           | `/dev/fuse` must be mode 0666 (Ubuntu's default). The installer fixes this; re-run it.                                                                               |
+| Unlock fails with "fusermount3 … Permission denied" on Ubuntu 25.04 or later | Ubuntu's AppArmor profile for fusermount3 blocks mounts on a home folder. Re-run the installer: it allows the vault's folder in `/etc/apparmor.d/local/fusermount3`. |
+| Forgot the vault password                                                    | There is no recovery. On the locked screen, choose "Forgot the password?" to delete the vault and start over.                                                        |
