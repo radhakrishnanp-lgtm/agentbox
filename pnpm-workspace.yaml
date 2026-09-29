@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Only these packages may run install scripts (native builds). Everything else
+# is blocked, which stops a compromised dependency from running code on install.
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+  - node-pty
+
+# Wait 3 days before accepting a newly published version, so a hijacked
+# release is usually caught and yanked before it reaches us.
+minimumReleaseAge: 4320

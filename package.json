@@ -1,0 +1,38 @@
+{
+  "name": "agentbox",
+  "private": true,
+  "description": "Self-hosted gateway that keeps AI coding CLI logins on one VPS you control.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@10.34.6",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter ./packages/** --filter ./apps/** run build",
+    "dev:server": "pnpm --filter @agentbox/server dev",
+    "dev:web": "pnpm --filter @agentbox/web dev",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.0",
+    "@vitest/coverage-v8": "^5.0.2",
+    "eslint": "^10.11.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^16.4.0",
+    "prettier": "^3.7.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.60.0",
+    "vitest": "^5.0.2"
+  }
+}
