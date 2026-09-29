@@ -24,17 +24,47 @@ const listenSchema = z
       }
       return { kind: 'unix' as const, path };
     }
-    const m = /^(127\.0\.0\.1|\[::1\]|localhost):(\d{2,5})$/.exec(v);
+    const m = /^(127\.0\.0\.1|\[::1\]|localhost|[\d.]+):(\d{2,5})$/.exec(v);
     const [, host, port] = m ?? [];
-    if (!host || !port) {
+    if (!host || !port || !isLoopbackOrPrivate(host)) {
       ctx.addIssue({
         code: 'custom',
-        message: 'use unix:/path/to.sock or 127.0.0.1:<port> (never a public address)',
+        message:
+          'use unix:/path/to.sock, 127.0.0.1:<port>, or a private bridge address like ' +
+          '172.18.0.1:<port> for a reverse proxy in Docker (never a public address)',
       });
       return z.NEVER;
     }
     return { kind: 'tcp' as const, host: host.replace(/[[\]]/g, ''), port: Number(port) };
   });
+
+/** Loopback, or an RFC 1918 address such as a Docker bridge gateway. Never 0.0.0.0 or public. */
+function isLoopbackOrPrivate(host: string): boolean {
+  if (host === '127.0.0.1' || host === '[::1]' || host === 'localhost') return true;
+  const parts = host.split('.').map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  const [a = 0, b = 0] = parts;
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+/** Comma-separated IPs or CIDRs of the reverse proxy allowed to set X-Forwarded-* headers. */
+const trustedProxiesSchema = z
+  .string()
+  .trim()
+  .transform((v) =>
+    v
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean),
+  )
+  .pipe(
+    z
+      .array(z.union([z.ipv4(), z.ipv6(), z.cidrv4(), z.cidrv6()]))
+      .min(1)
+      .max(16),
+  );
 
 const envSchema = z
   .object({
@@ -44,6 +74,7 @@ const envSchema = z
     AGENTBOX_RP_NAME: z.string().trim().min(1).max(64).default('agentbox'),
     AGENTBOX_DATA_DIR: z.string().trim().min(1).default('/var/lib/agentbox'),
     AGENTBOX_LISTEN: listenSchema.prefault('unix:/run/agentbox/web.sock'),
+    AGENTBOX_TRUSTED_PROXIES: trustedProxiesSchema.optional(),
     AGENTBOX_WEB_DIST: z.string().trim().optional(),
     AGENTBOX_ENCRYPTION_KEY: base64Key,
     AGENTBOX_ENCRYPTION_KEY_PREVIOUS: base64Key.optional(),
@@ -53,6 +84,13 @@ const envSchema = z
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   })
   .superRefine((env, ctx) => {
+    if (env.AGENTBOX_LISTEN.kind === 'unix' && env.AGENTBOX_TRUSTED_PROXIES) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AGENTBOX_TRUSTED_PROXIES'],
+        message: 'only applies to TCP listening; the Unix socket already trusts its proxy',
+      });
+    }
     const origin = new URL(env.AGENTBOX_ORIGIN);
     if (env.NODE_ENV === 'production' && origin.protocol !== 'https:') {
       ctx.addIssue({
@@ -79,6 +117,8 @@ export interface Config {
   rpName: string;
   dataDir: string;
   listen: { kind: 'unix'; path: string } | { kind: 'tcp'; host: string; port: number };
+  /** Proxies whose X-Forwarded-* headers are believed when listening on TCP. */
+  trustedProxies: string[] | undefined;
   webDist: string | undefined;
   encryptionKey: Buffer;
   encryptionKeyPrevious: Buffer | undefined;
@@ -102,6 +142,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     rpName: e.AGENTBOX_RP_NAME,
     dataDir: e.AGENTBOX_DATA_DIR,
     listen: e.AGENTBOX_LISTEN,
+    trustedProxies: e.AGENTBOX_TRUSTED_PROXIES,
     webDist: e.AGENTBOX_WEB_DIST,
     encryptionKey: e.AGENTBOX_ENCRYPTION_KEY,
     encryptionKeyPrevious: e.AGENTBOX_ENCRYPTION_KEY_PREVIOUS,
