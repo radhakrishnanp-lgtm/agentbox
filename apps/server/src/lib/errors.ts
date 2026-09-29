@@ -12,6 +12,7 @@ const STATUS: Record<ApiErrorCode, number> = {
   setup_complete: 409,
   locked: 423,
   rate_limited: 429,
+  unavailable: 503,
   internal: 500,
 };
 

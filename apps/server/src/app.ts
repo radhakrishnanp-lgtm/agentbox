@@ -28,6 +28,8 @@ import { gatewayAdminRoutes } from './routes/gateway.ts';
 import { healthRoutes } from './routes/health.ts';
 import { securityRoutes } from './routes/security.ts';
 import { setupRoutes } from './routes/setup.ts';
+import { terminalRoutes } from './routes/terminals.ts';
+import { terminalSocketRoutes } from './terminals/ws.ts';
 import type { Services } from './services.ts';
 
 export interface BuildOptions {
@@ -142,6 +144,8 @@ export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<Fa
   await app.register(gatewayAdminRoutes(s));
   await app.register(gatewayRoutes(s));
   await app.register(machineScriptRoutes(s));
+  await app.register(terminalRoutes(s));
+  await app.register(terminalSocketRoutes(s));
 
   const webDist = config.webDist ? resolve(config.webDist) : undefined;
   const hasWeb = webDist !== undefined && existsSync(join(webDist, 'index.html'));

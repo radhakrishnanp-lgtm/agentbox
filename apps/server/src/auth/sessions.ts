@@ -257,6 +257,43 @@ export class Sessions {
     };
   }
 
+  /**
+   * For long-lived connections (terminals): is the session still good? Ends it
+   * if it ran out, exactly like `authenticate` would on the next request.
+   */
+  check(sessionId: string): boolean {
+    const row = this.#db
+      .select({ s: sessionTable, approvedAt: device.approvedAt, deviceRevokedAt: device.revokedAt })
+      .from(sessionTable)
+      .innerJoin(device, eq(device.id, sessionTable.deviceId))
+      .where(eq(sessionTable.id, sessionId))
+      .get();
+    if (!row || row.s.revokedAt !== null) return false;
+    const now = this.#clock.now();
+    if (now >= row.s.expiresAt) {
+      this.end(sessionId, 'lifetime');
+      return false;
+    }
+    if (now - row.s.lastActiveAt >= this.#settings.get().idleTimeoutMinutes * MINUTE) {
+      this.end(sessionId, 'idle');
+      return false;
+    }
+    if (row.approvedAt === null || row.deviceRevokedAt !== null) {
+      this.end(sessionId, 'device');
+      return false;
+    }
+    return true;
+  }
+
+  /** Typing in a terminal counts as activity for the idle timeout. */
+  touch(sessionId: string): void {
+    this.#db
+      .update(sessionTable)
+      .set({ lastActiveAt: this.#clock.now() })
+      .where(and(eq(sessionTable.id, sessionId), isNull(sessionTable.revokedAt)))
+      .run();
+  }
+
   /** Ends a session immediately. Safe to call more than once. */
   end(sessionId: string, reason: EndReason, ip?: string): void {
     const now = this.#clock.now();

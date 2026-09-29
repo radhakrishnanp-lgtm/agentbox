@@ -106,8 +106,8 @@ export class Harness {
     this.services = createServices(config, openDb(':memory:'), this.clock);
   }
 
-  static async create(): Promise<Harness> {
-    const h = new Harness();
+  static async create(overrides: Record<string, string> = {}): Promise<Harness> {
+    const h = new Harness(testConfig(overrides));
     h.app = await buildApp(h.services, { logger: false });
     await h.app.ready();
     return h;

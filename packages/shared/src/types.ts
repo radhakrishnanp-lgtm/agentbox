@@ -21,6 +21,7 @@ export type ApiErrorCode =
   | 'locked'
   | 'setup_complete'
   | 'invalid_credential'
+  | 'unavailable'
   | 'internal';
 
 export interface SessionInfo {

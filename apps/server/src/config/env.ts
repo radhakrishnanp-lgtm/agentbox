@@ -76,6 +76,12 @@ const envSchema = z
     AGENTBOX_LISTEN: listenSchema.prefault('unix:/run/agentbox/web.sock'),
     AGENTBOX_TRUSTED_PROXIES: trustedProxiesSchema.optional(),
     AGENTBOX_WEB_DIST: z.string().trim().optional(),
+    /** agentbox-termd's socket, or "none" to turn terminals off. */
+    AGENTBOX_TERMD_SOCKET: z
+      .string()
+      .trim()
+      .refine((v) => v === 'none' || v.startsWith('/'), 'must be an absolute path or "none"')
+      .default('/run/agentbox-termd/termd.sock'),
     AGENTBOX_ENCRYPTION_KEY: base64Key,
     AGENTBOX_ENCRYPTION_KEY_PREVIOUS: base64Key.optional(),
     AGENTBOX_SESSION_SECRET: z
@@ -120,6 +126,8 @@ export interface Config {
   /** Proxies whose X-Forwarded-* headers are believed when listening on TCP. */
   trustedProxies: string[] | undefined;
   webDist: string | undefined;
+  /** agentbox-termd's Unix socket; null when terminals are turned off. */
+  termdSocket: string | null;
   encryptionKey: Buffer;
   encryptionKeyPrevious: Buffer | undefined;
   sessionSecret: string;
@@ -144,6 +152,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     listen: e.AGENTBOX_LISTEN,
     trustedProxies: e.AGENTBOX_TRUSTED_PROXIES,
     webDist: e.AGENTBOX_WEB_DIST,
+    termdSocket: e.AGENTBOX_TERMD_SOCKET === 'none' ? null : e.AGENTBOX_TERMD_SOCKET,
     encryptionKey: e.AGENTBOX_ENCRYPTION_KEY,
     encryptionKeyPrevious: e.AGENTBOX_ENCRYPTION_KEY_PREVIOUS,
     sessionSecret: e.AGENTBOX_SESSION_SECRET,

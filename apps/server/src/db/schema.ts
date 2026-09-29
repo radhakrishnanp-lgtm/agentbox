@@ -211,6 +211,20 @@ export const setting = sqliteTable('setting', {
   updatedAt: integer('updated_at').notNull(),
 });
 
+/**
+ * The terminal vault's password, stored (encrypted) only while the owner has
+ * auto-unlock after restarts turned on. Without it, agentbox never keeps it.
+ */
+export const vaultKey = sqliteTable(
+  'vault_key',
+  {
+    id: integer('id').primaryKey(),
+    secretEnc: text('secret_enc').notNull(),
+    ...timestamps,
+  },
+  (t) => [check('vault_key_single_row', sql`${t.id} = 1`)],
+);
+
 /** AI provider keys for the key gateway. The key itself is AES-256-GCM encrypted. */
 export const aiKey = sqliteTable(
   'ai_key',
