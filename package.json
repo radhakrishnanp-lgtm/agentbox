@@ -2,7 +2,7 @@
   "name": "agentbox",
   "private": true,
   "description": "Self-hosted gateway that keeps AI coding CLI logins on one VPS you control.",
-  "license": "UNLICENSED",
+  "license": "BSD-3-Clause",
   "type": "module",
   "packageManager": "pnpm@10.34.6",
   "engines": {
