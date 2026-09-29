@@ -31,6 +31,8 @@ export type AuditAction =
   | 'session.expired'
   | 'passkey.added'
   | 'passkey.removed'
+  | 'password.set'
+  | 'password.removed'
   | 'ai_key.added'
   | 'ai_key.removed'
   | 'machine.added'

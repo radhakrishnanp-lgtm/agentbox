@@ -23,6 +23,8 @@ const LABELS: Record<string, string> = {
   'session.expired': 'Session ended',
   'passkey.added': 'Passkey added',
   'passkey.removed': 'Passkey removed',
+  'password.set': 'Sign-in password set',
+  'password.removed': 'Sign-in password removed',
   'ai_key.added': 'AI key added',
   'ai_key.removed': 'AI key removed',
   'machine.added': 'Machine added',

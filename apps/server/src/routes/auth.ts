@@ -4,6 +4,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import {
   newDeviceTotpSchema,
   passkeyVerifySchema,
+  passwordSignInSchema,
   recoverySignInSchema,
   type AuthState,
   type SignInResult,
@@ -191,6 +192,47 @@ export function authRoutes(s: Services): FastifyPluginAsyncZod {
       },
     );
 
+    /**
+     * For computers without a passkey: the sign-in password (set in Security)
+     * plus an authenticator code. Both are always checked, and a failure never
+     * says which part was wrong.
+     */
+    app.post(
+      '/api/auth/password',
+      {
+        schema: { body: passwordSignInSchema },
+        config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+      },
+      async (request, reply): Promise<SignInResult> => {
+        s.lockouts.assertOpen('password', POLICIES.password);
+        s.lockouts.assertOpen('totp', POLICIES.totp);
+        const passwordOk = await s.owner.verifyPassword(request.body.password);
+        // Only a right password can use up the code, so guesses can't block your next one.
+        const totpOk = passwordOk && s.owner.consumeTotp(request.body.code);
+        if (!totpOk) {
+          // A right password with a wrong code counts against the code, like new-device approval.
+          failedLogin(request, passwordOk ? 'totp' : 'password');
+          throw invalidCredential();
+        }
+        s.lockouts.succeed('password');
+        s.lockouts.succeed('totp');
+        const dev = s.devices.ensure(request, reply);
+        if (!s.devices.isApproved(dev)) {
+          return approveAndStart(request, reply, dev.id, 'password', request.body.deviceName);
+        }
+        const session = await s.sessions.start(request, dev.id);
+        s.audit.record({
+          actor: `device:${dev.id}`,
+          action: 'auth.login',
+          targetType: 'session',
+          targetId: session.id,
+          ip: request.ip,
+          details: { method: 'password' },
+        });
+        return { status: 'signed_in', session };
+      },
+    );
+
     app.post('/api/auth/logout', async (request, reply) => {
       const rowId = sessionOf(request)?.rowId;
       await s.sessions.logout(request, reply, cookieNames(s.config).session);
@@ -248,7 +290,7 @@ export function authRoutes(s: Services): FastifyPluginAsyncZod {
       request: FastifyRequest,
       _reply: FastifyReply,
       deviceId: string,
-      by: 'totp' | 'recovery',
+      by: 'totp' | 'recovery' | 'password',
       name: string,
     ): Promise<SignInResult> {
       s.devices.approve(deviceId, by, name);
@@ -273,7 +315,10 @@ export function authRoutes(s: Services): FastifyPluginAsyncZod {
       return { status: 'signed_in', session };
     }
 
-    function failedLogin(request: FastifyRequest, method: 'passkey' | 'totp' | 'recovery'): void {
+    function failedLogin(
+      request: FastifyRequest,
+      method: 'passkey' | 'totp' | 'recovery' | 'password',
+    ): void {
       const key = method === 'passkey' ? ipKey(request) : method;
       const policy = method === 'passkey' ? POLICIES.passkeyIp : POLICIES[method];
       const locked = s.lockouts.fail(key, policy);

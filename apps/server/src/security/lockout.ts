@@ -1,6 +1,6 @@
 /**
  * Failure counting and lockouts, persisted so a restart doesn't reset them.
- * Keys are per factor ("totp", "recovery") or per IP ("passkey:ip:1.2.3.4").
+ * Keys are per factor ("totp", "recovery", "password") or per IP ("passkey:ip:1.2.3.4").
  * Each repeated lockout doubles the lock time, up to a ceiling.
  */
 import { eq } from 'drizzle-orm';
@@ -100,6 +100,15 @@ export const POLICIES = {
     baseLockMs: 60 * MIN,
     maxLockMs: 24 * 60 * MIN,
     message: 'Too many wrong recovery attempts. Recovery sign-in is paused.',
+  },
+  /** 5 failed password sign-ins → 15 min, doubling to 24 h. Passkeys keep working meanwhile. */
+  password: {
+    maxFailures: 5,
+    windowMs: 15 * MIN,
+    baseLockMs: 15 * MIN,
+    maxLockMs: 24 * 60 * MIN,
+    message:
+      'Too many failed password sign-ins. It is paused for a while; your passkey still works.',
   },
   /** 20 failed passkey attempts per IP per hour → that IP waits 1 h. */
   passkeyIp: {

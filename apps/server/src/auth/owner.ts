@@ -1,13 +1,19 @@
-/** The owner's second factors: TOTP (with replay protection) and recovery codes. */
-import { and, eq, isNull, lt } from 'drizzle-orm';
+/**
+ * The owner's other factors: TOTP (with replay protection), recovery codes and
+ * the optional sign-in password (only ever accepted together with a TOTP code).
+ */
+import { and, eq, isNotNull, isNull, lt } from 'drizzle-orm';
 import type { Db } from '../db/client.ts';
 import { owner, recoveryCode } from '../db/schema.ts';
 import type { Clock } from '../lib/clock.ts';
-import type { SecretBox } from '../lib/crypto.ts';
+import { scryptHash, scryptVerify, type SecretBox } from '../lib/crypto.ts';
 import { findRecoveryCode } from './recovery-codes.ts';
 import { matchTotpStep } from './totp.ts';
 
 export const OWNER_TOTP_CONTEXT = 'owner.totp_secret';
+
+/** Compared against when no password is set, so timing doesn't reveal whether one is. */
+let dummyHash: Promise<string> | null = null;
 
 export class OwnerFactors {
   readonly #db: Db;
@@ -40,6 +46,40 @@ export class OwnerFactors {
       .where(and(eq(owner.id, row.id), lt(owner.totpLastStep, step)))
       .run();
     return res.changes === 1;
+  }
+
+  hasPassword(): boolean {
+    return !!this.#db.select({ h: owner.passwordHash }).from(owner).get()?.h;
+  }
+
+  async setPassword(password: string): Promise<void> {
+    const hash = await scryptHash(password);
+    this.#db
+      .update(owner)
+      .set({ passwordHash: hash, updatedAt: this.#clock.now() })
+      .where(eq(owner.id, 1))
+      .run();
+  }
+
+  /** True if a password was set and is now removed. */
+  removePassword(): boolean {
+    const res = this.#db
+      .update(owner)
+      .set({ passwordHash: null, updatedAt: this.#clock.now() })
+      .where(and(eq(owner.id, 1), isNotNull(owner.passwordHash)))
+      .run();
+    return res.changes === 1;
+  }
+
+  /** Checks the sign-in password. Always does the full scrypt work, set or not. */
+  async verifyPassword(password: string): Promise<boolean> {
+    const stored = this.#db.select({ h: owner.passwordHash }).from(owner).get()?.h ?? null;
+    if (stored === null) {
+      dummyHash ??= scryptHash('agentbox: no password is set');
+      await scryptVerify(password, await dummyHash);
+      return false;
+    }
+    return scryptVerify(password, stored);
   }
 
   /** Finds a matching unused recovery code without using it up. */

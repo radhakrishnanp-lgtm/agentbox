@@ -325,6 +325,121 @@ describe('recovery', () => {
   });
 });
 
+describe('password + authenticator code sign-in', () => {
+  const PASSWORD = 'correct horse battery staple';
+
+  async function setPassword(password = PASSWORD) {
+    return laptop.request({ method: 'PUT', url: '/api/security/password', payload: { password } });
+  }
+
+  it('is off until a password is set, and then signs in a new computer', async () => {
+    const other = h.browser('198.51.100.20', 'Mozilla/5.0 (Windows) Edge/140');
+    const off = await other.post('/api/auth/password', {
+      password: PASSWORD,
+      code: h.totp(),
+      deviceName: 'Office PC',
+    });
+    expect(off.statusCode).toBe(401);
+    expect((await laptop.get('/api/security')).json().passwordEnabled).toBe(false);
+
+    expect((await setPassword()).statusCode).toBe(200);
+    expect((await laptop.get('/api/security')).json().passwordEnabled).toBe(true);
+    h.clock.advance(30_000);
+    const res = await other.post('/api/auth/password', {
+      password: PASSWORD,
+      code: h.totp(),
+      deviceName: 'Office PC',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().session.deviceName).toBe('Office PC');
+    expect((await other.get('/api/security')).statusCode).toBe(200);
+    const actions = h.services.audit.page(10).entries.map((e) => e.action);
+    expect(actions).toContain('password.set');
+    expect(actions).toContain('auth.device_approved');
+  });
+
+  it('needs both parts, and a wrong password does not use up the code', async () => {
+    await setPassword();
+    h.clock.advance(30_000);
+    const code = h.totp();
+    const wrongPw = await h.browser('198.51.100.21').post('/api/auth/password', {
+      password: 'not the password at all',
+      code,
+      deviceName: 'X',
+    });
+    expect(wrongPw.statusCode).toBe(401);
+    const wrongCode = await h.browser('198.51.100.22').post('/api/auth/password', {
+      password: PASSWORD,
+      code: '000000',
+      deviceName: 'X',
+    });
+    expect(wrongCode.statusCode).toBe(401);
+    // Same message either way.
+    expect(wrongCode.json().error.message).toBe(wrongPw.json().error.message);
+    const ok = await h.browser('198.51.100.23').post('/api/auth/password', {
+      password: PASSWORD,
+      code,
+      deviceName: 'X',
+    });
+    expect(ok.statusCode).toBe(200);
+    // And that code can't be replayed.
+    const replay = await h.browser('198.51.100.24').post('/api/auth/password', {
+      password: PASSWORD,
+      code,
+      deviceName: 'Y',
+    });
+    expect(replay.statusCode).toBe(401);
+  });
+
+  it('pauses after 5 wrong passwords, while passkeys keep working', async () => {
+    await setPassword();
+    for (let i = 0; i < 5; i += 1) {
+      await h.browser(`192.0.2.${String(10 + i)}`).post('/api/auth/password', {
+        password: `guess number ${String(i)}`,
+        code: '123456',
+        deviceName: 'X',
+      });
+    }
+    h.clock.advance(30_000);
+    const locked = await h.browser('198.51.100.30').post('/api/auth/password', {
+      password: PASSWORD,
+      code: h.totp(),
+      deviceName: 'X',
+    });
+    expect(locked.statusCode).toBe(423);
+    await laptop.post('/api/auth/logout');
+    expect((await h.signInWithPasskey(laptop)).statusCode).toBe(200);
+    h.clock.advance(16 * MIN);
+    const ok = await h.browser('198.51.100.31').post('/api/auth/password', {
+      password: PASSWORD,
+      code: h.totp(),
+      deviceName: 'X',
+    });
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('setting or removing the password needs a fresh passkey check and a strong password', async () => {
+    expect((await setPassword('short')).statusCode).toBe(400);
+    h.clock.advance(6 * MIN);
+    await laptop.post('/api/auth/activity');
+    const stale = await setPassword();
+    expect(stale.statusCode).toBe(403);
+    expect(stale.json().error.code).toBe('fresh_auth_required');
+    await h.reauth(laptop);
+    expect((await setPassword()).statusCode).toBe(200);
+    const removed = await laptop.request({ method: 'DELETE', url: '/api/security/password' });
+    expect(removed.statusCode).toBe(200);
+    expect((await laptop.get('/api/security')).json().passwordEnabled).toBe(false);
+    h.clock.advance(30_000);
+    const res = await h.browser('198.51.100.40').post('/api/auth/password', {
+      password: PASSWORD,
+      code: h.totp(),
+      deviceName: 'X',
+    });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
 describe('audit trail', () => {
   it('records sign-ins and keeps an intact hash chain', async () => {
     await laptop.post('/api/auth/logout');

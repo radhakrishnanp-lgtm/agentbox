@@ -9,6 +9,7 @@ Updated 2026-09-29. Plan: `MASTER_PLAN.md` (in the project files).
 | 1   | Foundation: setup link, passkey, TOTP, recovery codes, sessions, audit log, web UI | **Done** |
 | 1b  | Key gateway: AI keys stay on the VPS, machines get a revocable pass                | **Done** |
 | 2   | Web terminal over tmux (agentbox-termd as `dev`) with an encrypted vault           | **Done** |
+| 2b  | Optional sign-in with password + authenticator code (computers without a passkey)  | **Done** |
 | 3   | Device approval with number matching, sessions list, IP re-check, fail2ban         | Next     |
 | 4   | GPU nodes: enrollment, connect.sh, tunnel-keys, tunnelctl, sshd test in CI         | Planned  |
 | 5   | Panic button, audit UI filters, Telegram alerts                                    | Planned  |

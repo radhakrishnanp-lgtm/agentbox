@@ -1,6 +1,15 @@
-import { LIMITS, displayNameSchema } from '@agentbox/shared';
+import { LIMITS, displayNameSchema, signInPasswordSchema } from '@agentbox/shared';
 import type { PasskeySummary, SecurityOverview } from '@agentbox/shared';
-import { Cloud, Fingerprint, KeyRound, Plus, ShieldCheck, Smartphone, Trash2 } from 'lucide-react';
+import {
+  Cloud,
+  Fingerprint,
+  KeyRound,
+  LockKeyhole,
+  Plus,
+  ShieldCheck,
+  Smartphone,
+  Trash2,
+} from 'lucide-react';
 import { useState, type SyntheticEvent } from 'react';
 import { toast } from 'sonner';
 import { PageHeader } from '../components/Layout.tsx';
@@ -23,7 +32,7 @@ export function Security() {
     <>
       <PageHeader
         title="Security"
-        description="How you sign in. Removing or adding a passkey asks for your passkey first."
+        description="How you sign in. Changes here ask for your passkey first."
       />
       <div className="space-y-4">
         {overview.status === 'error' ? (
@@ -32,6 +41,7 @@ export function Security() {
           </Alert>
         ) : null}
         <Passkeys data={overview.data} onChange={overview.reload} />
+        <SignInPassword data={overview.data} onChange={overview.reload} />
         <Card>
           <CardHeader
             icon={<Smartphone className="size-5" aria-hidden />}
@@ -62,6 +72,176 @@ export function Security() {
         </Card>
       </div>
     </>
+  );
+}
+
+/** Optional: password + authenticator code, for computers without a passkey. */
+function SignInPassword({
+  data,
+  onChange,
+}: {
+  data: SecurityOverview | null;
+  onChange: () => void;
+}) {
+  const { setSession } = useAuth();
+  const [editing, setEditing] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const enabled = data?.passwordEnabled ?? false;
+
+  const remove = () => {
+    setBusy(true);
+    withFreshAuth(() => api('/api/security/password', { method: 'DELETE' }), setSession)
+      .then(() => {
+        toast.success('Password sign-in turned off');
+        setConfirmingRemove(false);
+        onChange();
+      })
+      .catch((err: unknown) => toast.error(errorMessage(err)))
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  return (
+    <Card>
+      <CardHeader
+        icon={<LockKeyhole className="size-5" aria-hidden />}
+        title="Password sign-in"
+        description="Sign in on a computer without your passkey, using this password plus your authenticator code."
+        action={
+          data ? <Badge tone={enabled ? 'success' : 'info'}>{enabled ? 'On' : 'Off'}</Badge> : null
+        }
+      />
+      {editing ? (
+        <SetPassword
+          changing={enabled}
+          onDone={() => {
+            setEditing(false);
+            onChange();
+          }}
+          onCancel={() => {
+            setEditing(false);
+          }}
+        />
+      ) : (
+        <CardBody className="flex flex-wrap gap-2 pt-0">
+          <Button
+            variant="secondary"
+            disabled={!data}
+            onClick={() => {
+              setEditing(true);
+            }}
+          >
+            {enabled ? 'Change password' : 'Set a password'}
+          </Button>
+          {enabled ? (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setConfirmingRemove(true);
+              }}
+            >
+              Turn off
+            </Button>
+          ) : null}
+        </CardBody>
+      )}
+      <ConfirmDialog
+        open={confirmingRemove}
+        onOpenChange={setConfirmingRemove}
+        title="Turn off password sign-in?"
+        description="Computers already signed in stay signed in. New ones will need a passkey. You'll confirm with a passkey first."
+        confirmLabel="Turn off"
+        tone="danger"
+        loading={busy}
+        onConfirm={remove}
+      />
+    </Card>
+  );
+}
+
+function SetPassword({
+  changing,
+  onDone,
+  onCancel,
+}: {
+  changing: boolean;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const { setSession } = useAuth();
+  const [password, setPassword] = useState('');
+  const [repeat, setRepeat] = useState('');
+  const [errors, setErrors] = useState<{ password?: string; repeat?: string; form?: string }>({});
+  const [busy, setBusy] = useState(false);
+
+  const submit = (e: SyntheticEvent) => {
+    e.preventDefault();
+    const parsed = signInPasswordSchema.safeParse(password);
+    if (!parsed.success) {
+      setErrors({ password: parsed.error.issues[0]?.message ?? 'Enter a password' });
+      return;
+    }
+    if (repeat !== password) {
+      setErrors({ repeat: "The passwords don't match" });
+      return;
+    }
+    setBusy(true);
+    setErrors({});
+    withFreshAuth(
+      () => api('/api/security/password', { method: 'PUT', body: { password: parsed.data } }),
+      setSession,
+    )
+      .then(() => {
+        toast.success(changing ? 'Password changed' : 'Password sign-in is on');
+        onDone();
+      })
+      .catch((err: unknown) => {
+        setErrors({ form: errorMessage(err) });
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  return (
+    <CardBody className="border-t border-border bg-surface-2/40">
+      <form className="space-y-3" onSubmit={submit} noValidate>
+        {errors.form ? <Alert tone="danger">{errors.form}</Alert> : null}
+        <Field
+          label={changing ? 'New password' : 'Password'}
+          type="password"
+          autoComplete="new-password"
+          autoFocus
+          hint="At least 12 characters. Use a new one, not your vault password, and keep it in your password manager."
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value);
+          }}
+          error={errors.password}
+        />
+        <Field
+          label="Type it again"
+          type="password"
+          autoComplete="new-password"
+          value={repeat}
+          onChange={(e) => {
+            setRepeat(e.target.value);
+          }}
+          error={errors.repeat}
+        />
+        <div className="flex gap-2">
+          <Button type="submit" loading={busy}>
+            <ShieldCheck className="size-4" aria-hidden />
+            Save password
+          </Button>
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </CardBody>
   );
 }
 
