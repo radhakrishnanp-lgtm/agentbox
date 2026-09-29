@@ -59,6 +59,8 @@ export interface PasskeySummary {
 export interface SecurityOverview {
   passkeys: PasskeySummary[];
   totpEnabled: boolean;
+  /** Password + authenticator code sign-in is set up. */
+  passwordEnabled: boolean;
   recoveryCodesRemaining: number;
 }
 

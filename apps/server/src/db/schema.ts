@@ -1,7 +1,7 @@
 /**
  * Database schema. Times are UTC epoch milliseconds. Ids are UUIDv7 unless noted.
  * Secrets are never stored in plain text: tokens are stored as SHA-256 hashes,
- * recovery codes as scrypt hashes, and the TOTP seed AES-256-GCM encrypted.
+ * recovery codes and the sign-in password as scrypt hashes, and the TOTP seed AES-256-GCM encrypted.
  */
 import { sql } from 'drizzle-orm';
 import {
@@ -30,6 +30,8 @@ export const owner = sqliteTable(
     totpSecretEnc: text('totp_secret_enc').notNull(),
     /** Last accepted TOTP time-step; codes at or before it are replays. */
     totpLastStep: integer('totp_last_step').notNull().default(0),
+    /** scrypt hash of the optional sign-in password (used with a TOTP code). */
+    passwordHash: text('password_hash'),
     ...timestamps,
   },
   (t) => [check('owner_single_row', sql`${t.id} = 1`)],

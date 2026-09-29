@@ -8,7 +8,7 @@ import { Machines } from './screens/Machines.tsx';
 import { Security } from './screens/Security.tsx';
 import { Terminals } from './screens/Terminals.tsx';
 import { SetupWizard } from './screens/SetupWizard.tsx';
-import { Recovery, SignIn } from './screens/SignIn.tsx';
+import { PasswordSignIn, Recovery, SignIn } from './screens/SignIn.tsx';
 import { NotFound, ServerError, SetupNeeded } from './screens/StatusScreens.tsx';
 import { useAuth } from './state/auth.tsx';
 
@@ -58,11 +58,14 @@ export function App() {
 
   if (!session) {
     if (path === '/recovery') return <Recovery />;
+    if (path === '/signin/password') return <PasswordSignIn />;
     if (path !== '/signin') return <Redirect to="/signin" />;
     return <SignIn />;
   }
 
-  if (path === '/signin' || path === '/recovery') return <Redirect to="/" />;
+  if (path === '/signin' || path === '/signin/password' || path === '/recovery') {
+    return <Redirect to="/" />;
+  }
   const terminal = /^\/terminals\/([^/]+)$/.exec(path)?.[1];
   if (terminal) {
     // Full screen: the terminal gets all the room, on phones too.

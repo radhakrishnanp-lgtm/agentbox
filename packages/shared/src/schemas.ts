@@ -102,6 +102,25 @@ export const recoverySignInSchema = z.object({
   deviceName: displayNameSchema(LIMITS.deviceNameMax),
 });
 
+/**
+ * The optional sign-in password, used together with an authenticator code on
+ * computers that have no passkey. Long enough that guessing online is hopeless.
+ */
+export const SIGNIN_PASSWORD_MIN = 12;
+export const signInPasswordSchema = z
+  .string()
+  .min(SIGNIN_PASSWORD_MIN, `Use at least ${SIGNIN_PASSWORD_MIN} characters`)
+  .max(256, 'Use at most 256 characters');
+
+export const setSignInPasswordSchema = z.object({ password: signInPasswordSchema });
+
+export const passwordSignInSchema = z.object({
+  // Not the full rules: a wrong password must fail like any other, not as a 400.
+  password: z.string().min(1).max(256),
+  code: totpCodeSchema,
+  deviceName: displayNameSchema(LIMITS.deviceNameMax),
+});
+
 export const auditQuerySchema = z.object({
   before: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().min(1).max(LIMITS.auditPageMax).default(50),

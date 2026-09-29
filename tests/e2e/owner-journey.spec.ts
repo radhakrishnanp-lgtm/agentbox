@@ -17,6 +17,7 @@ import { TOTP } from 'otpauth';
 import { FakeProvider } from '../../apps/server/test/helpers/fake-provider.ts';
 import { E2E_ORIGIN, e2eEnv } from './env.ts';
 
+const SIGNIN_PASSWORD = 'e2e sign-in password, long enough';
 const REAL_KEY = 'sk-ant-api03-E2E-REAL-KEY-never-leaves-agentbox-wxyz';
 
 /**
@@ -87,6 +88,12 @@ async function addAuthenticator(context: BrowserContext, page: Page) {
 }
 
 /** Fails the test on any CSP violation or uncaught error in the page. */
+/** Screenshots for the docs and PRs, only when E2E_SCREENSHOTS names a folder. */
+async function shot(page: Page, name: string): Promise<void> {
+  const dir = process.env['E2E_SCREENSHOTS'];
+  if (dir) await page.screenshot({ path: join(dir, `${name}.png`), fullPage: true });
+}
+
 function watchConsole(page: Page): string[] {
   const problems: string[] = [];
   page.on('console', (msg) => {
@@ -100,7 +107,7 @@ function watchConsole(page: Page): string[] {
 }
 
 test('owner sets up agentbox and signs in on two devices', async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   const link = setupLink();
 
   // ── Device 1: setup ─────────────────────────────────────────────
@@ -194,10 +201,39 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await phonePage.getByRole('button', { name: 'Approve and sign in' }).click();
   await expect(phonePage.getByText('Signed in on E2E phone.')).toBeVisible();
 
+  // ── Computer without a passkey: password + authenticator code ──
+  await page.goto('/security');
+  await page.getByRole('button', { name: 'Set a password' }).click();
+  await page.getByLabel('Password', { exact: true }).fill(SIGNIN_PASSWORD);
+  await page.getByLabel('Type it again').fill(SIGNIN_PASSWORD);
+  await page.getByRole('button', { name: 'Save password' }).click();
+  await expect(page.getByRole('button', { name: 'Change password' })).toBeVisible();
+
+  const office = await browser.newContext(); // no passkey at all
+  const officePage = await office.newPage();
+  const officeProblems = watchConsole(officePage);
+  await officePage.goto('/signin');
+  await shot(officePage, 'signin');
+  await officePage.getByRole('link', { name: 'Sign in with password and code' }).click();
+  await expect(officePage.getByRole('heading', { name: 'Sign in with password' })).toBeVisible();
+  await officePage.getByLabel('Password').fill(SIGNIN_PASSWORD);
+  // The phone used the next time step, so wait for the clock to move on first.
+  await officePage.waitForTimeout(30_000 - (Date.now() % 30_000) + 500);
+  await officePage
+    .getByLabel('6-digit authenticator code')
+    .fill(totp.generate({ timestamp: Date.now() + 30_000 }));
+  await officePage.getByLabel('Name this computer').fill('E2E office PC');
+  await shot(officePage, 'signin-password');
+  await officePage.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(officePage.getByText('Signed in on E2E office PC.')).toBeVisible();
+  expect(officeProblems).toEqual([]);
+  await office.close();
+
   // ── Activity: events are recorded and the hash chain verifies ──
   await page.goto('/activity');
   await expect(page.getByText('Setup completed')).toBeVisible();
-  await expect(page.getByText('Device approved')).toBeVisible();
+  await expect(page.getByText('Device approved')).toHaveCount(2); // phone and office PC
+  await expect(page.getByText('Sign-in password set')).toBeVisible();
   await page.getByRole('button', { name: 'Check integrity' }).click();
   await expect(page.getByText('Log is intact')).toBeVisible();
 

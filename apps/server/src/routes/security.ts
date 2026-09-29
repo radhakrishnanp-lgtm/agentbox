@@ -5,6 +5,7 @@ import {
   LIMITS,
   displayNameSchema,
   registrationResponseSchema,
+  setSignInPasswordSchema,
   type PasskeySummary,
   type SecurityOverview,
 } from '@agentbox/shared';
@@ -34,6 +35,7 @@ export function securityRoutes(s: Services): FastifyPluginAsyncZod {
             lastUsedAt: k.lastUsedAt === null ? null : iso(k.lastUsedAt),
           })),
           totpEnabled: s.owner.exists(),
+          passwordEnabled: s.owner.hasPassword(),
           recoveryCodesRemaining: s.owner.recoveryCodesRemaining(),
         };
       },
@@ -137,5 +139,41 @@ export function securityRoutes(s: Services): FastifyPluginAsyncZod {
         return { ok: true };
       },
     );
+
+    /** Sets or changes the sign-in password (used with an authenticator code). */
+    app.put(
+      '/api/security/password',
+      {
+        schema: { body: setSignInPasswordSchema },
+        preHandler: requireFreshAuth,
+        config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+      },
+      async (request) => {
+        const auth = authOf(request);
+        if (!s.owner.exists()) throw new AppError('not_found', 'Setup is not complete.');
+        const changed = s.owner.hasPassword();
+        await s.owner.setPassword(request.body.password);
+        s.audit.record({
+          actor: `device:${auth.deviceId}`,
+          action: 'password.set',
+          ip: request.ip,
+          details: { changed },
+        });
+        return { ok: true };
+      },
+    );
+
+    app.delete('/api/security/password', { preHandler: requireFreshAuth }, async (request) => {
+      const auth = authOf(request);
+      if (!s.owner.removePassword()) {
+        throw new AppError('not_found', 'No sign-in password is set.');
+      }
+      s.audit.record({
+        actor: `device:${auth.deviceId}`,
+        action: 'password.removed',
+        ip: request.ip,
+      });
+      return { ok: true };
+    });
   };
 }

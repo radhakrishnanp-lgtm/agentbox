@@ -1,6 +1,6 @@
 import { LIMITS, displayNameSchema, recoveryCodeSchema, totpCodeSchema } from '@agentbox/shared';
 import type { SignInResult } from '@agentbox/shared';
-import { Fingerprint, LifeBuoy, MonitorSmartphone } from 'lucide-react';
+import { Fingerprint, KeyRound, LifeBuoy, MonitorSmartphone } from 'lucide-react';
 import { useState, type SyntheticEvent } from 'react';
 import { AuthLayout, Link } from '../components/Layout.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -59,17 +59,26 @@ export function SignIn() {
   };
 
   return (
-    <AuthLayout title="Sign in" description="Use the passkey you created during setup.">
+    <AuthLayout
+      title="Sign in"
+      description="Use your passkey, or your password and authenticator code."
+    >
       <div className="space-y-4">
         {supported ? null : (
           <Alert tone="warning" title="This browser can't use passkeys">
-            Use an up-to-date browser, or sign in with a recovery code below.
+            Use an up-to-date browser, or sign in with your password and authenticator code below.
           </Alert>
         )}
         {error ? <Alert tone="danger">{error}</Alert> : null}
         <Button className="w-full" size="lg" onClick={start} loading={busy} disabled={!supported}>
           {busy ? null : <Fingerprint className="size-5" aria-hidden />}
           Sign in with passkey
+        </Button>
+        <Button variant="secondary" className="w-full" size="lg" asChild>
+          <Link to="/signin/password">
+            <KeyRound className="size-5" aria-hidden />
+            Sign in with password and code
+          </Link>
         </Button>
         <p className="text-center text-sm text-muted">
           Lost your passkeys?{' '}
@@ -78,6 +87,94 @@ export function SignIn() {
           </Link>
         </p>
       </div>
+    </AuthLayout>
+  );
+}
+
+/** For computers without a passkey: the sign-in password plus an authenticator code. */
+export function PasswordSignIn() {
+  const finish = useFinishSignIn();
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [name, setName] = useState(suggestDeviceName);
+  const [errors, setErrors] = useState<FormErrors<'password' | 'code' | 'name' | 'form'>>({});
+  const [busy, setBusy] = useState(false);
+
+  const submit = (e: SyntheticEvent) => {
+    e.preventDefault();
+    const c = totpCodeSchema.safeParse(code);
+    const n = displayNameSchema(LIMITS.deviceNameMax).safeParse(name);
+    if (!password || !c.success || !n.success) {
+      setErrors({
+        ...(password ? {} : { password: 'Enter your agentbox password' }),
+        ...(c.success ? {} : { code: c.error.issues[0]?.message }),
+        ...(n.success ? {} : { name: n.error.issues[0]?.message }),
+      });
+      return;
+    }
+    setBusy(true);
+    setErrors({});
+    post<SignInResult>('/api/auth/password', { password, code: c.data, deviceName: n.data })
+      .then(finish)
+      .catch((err: unknown) => {
+        setErrors({ form: errorMessage(err) });
+        setCode('');
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  return (
+    <AuthLayout
+      title="Sign in with password"
+      description="For a computer without your passkey. Enter your agentbox password and the 6-digit code from your authenticator app."
+    >
+      <form className="space-y-4" onSubmit={submit} noValidate>
+        {errors.form ? <Alert tone="danger">{errors.form}</Alert> : null}
+        <Field
+          label="Password"
+          type="password"
+          autoComplete="current-password"
+          autoFocus
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value);
+          }}
+          error={errors.password}
+        />
+        <Field
+          label="6-digit authenticator code"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={6}
+          value={code}
+          onChange={(e) => {
+            setCode(e.target.value.replace(/\D/g, ''));
+          }}
+          error={errors.code}
+        />
+        <Field
+          label="Name this computer"
+          value={name}
+          maxLength={LIMITS.deviceNameMax}
+          onChange={(e) => {
+            setName(e.target.value);
+          }}
+          error={errors.name}
+        />
+        <Button type="submit" className="w-full" size="lg" loading={busy}>
+          Sign in
+        </Button>
+        <p className="text-center text-sm text-muted">
+          <Link to="/signin" className="text-accent underline-offset-4 hover:underline">
+            Back to passkey sign-in
+          </Link>
+        </p>
+        <p className="text-center text-sm text-muted">
+          No password yet? Set one in Security on a device where you're signed in.
+        </p>
+      </form>
     </AuthLayout>
   );
 }
