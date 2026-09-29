@@ -13,6 +13,8 @@ import type { Db } from './db/client.ts';
 import type { Clock } from './lib/clock.ts';
 import { SecretBox } from './lib/crypto.ts';
 import { Lockouts } from './security/lockout.ts';
+import { TermdClient } from './terminals/client.ts';
+import { Terminals } from './terminals/service.ts';
 
 export interface Services {
   config: Config;
@@ -30,6 +32,7 @@ export interface Services {
   setup: SetupService;
   gateway: GatewayStore;
   relay: RelayState;
+  terminals: Terminals;
 }
 
 export function createServices(
@@ -61,5 +64,6 @@ export function createServices(
     setup: new SetupService(db, clock, config, box, audit),
     gateway: new GatewayStore(db, clock, box, audit, config),
     relay: new RelayState(),
+    terminals: new Terminals(new TermdClient(config.termdSocket), db, clock, box, audit, log),
   };
 }

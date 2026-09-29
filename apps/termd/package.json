@@ -1,0 +1,20 @@
+{
+  "name": "@agentbox/termd",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "start": "node dist/main.mjs",
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@agentbox/shared": "workspace:*",
+    "node-pty": "^1.1.0",
+    "zod": "^4.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

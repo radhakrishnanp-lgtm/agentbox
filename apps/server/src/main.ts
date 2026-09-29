@@ -27,6 +27,9 @@ async function main(): Promise<void> {
     await app.listen({ host: config.listen.host, port: config.listen.port });
   }
 
+  // With auto-unlock on, the terminal vault is unlocked again after a restart.
+  services.terminals.start(app.log);
+
   const shutdown = (signal: string) => {
     app.log.info({ signal }, 'shutting down');
     app

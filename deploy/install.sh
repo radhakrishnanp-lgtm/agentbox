@@ -16,6 +16,9 @@ readonly ETC=/etc/agentbox
 readonly BUILD_HOME=/var/cache/agentbox-build
 readonly SOCKET=/run/agentbox/web.sock
 readonly SERVICE=agentbox-web
+readonly TERM_SERVICE=agentbox-termd
+readonly TERM_SOCKET=/run/agentbox-termd/termd.sock
+readonly VAULT_DIR=/var/lib/agentbox-vault
 readonly MIN_FREE_MB=2048
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly SRC_DIR
@@ -24,7 +27,7 @@ readonly SRC_DIR
 DOMAIN="" PROXY="auto" EMAIL="" LISTEN="" TRUSTED="" TLS_INTERNAL=0
 TRAEFIK_DIR="/etc/dokploy/traefik/dynamic" TRAEFIK_RESOLVER="letsencrypt"
 TRAEFIK_ENTRY_HTTPS="websecure" TRAEFIK_ENTRY_HTTP="web" TRAEFIK_CONTAINER="dokploy-traefik"
-FIREWALL=1 ASSUME_YES=0 CHECK_ONLY=0 FORCE_OS=0 UPSTREAM_PORT=8787
+FIREWALL=1 ASSUME_YES=0 CHECK_ONLY=0 FORCE_OS=0 UPSTREAM_PORT=8787 TERM_USER=""
 
 usage() {
   cat <<'EOF'
@@ -44,6 +47,8 @@ Usage: sudo ./deploy/install.sh --domain <agent.example.com> [options]
   --no-firewall        Don't touch ufw
   --check              Report what would happen, change nothing
   --yes                Don't ask for confirmation
+  --term-user NAME     Linux user the browser terminals run as (default dev; created
+                       by the installer, its home is the encrypted vault)
   --tls-internal       caddy: self-signed certificate (testing without public DNS)
   --force-os           Allow an OS other than Ubuntu 24.04/26.04 (untested)
 EOF
@@ -69,6 +74,7 @@ load_saved() {
   TRAEFIK_RESOLVER="${saved[TRAEFIK_RESOLVER]:-$TRAEFIK_RESOLVER}"
   [[ "$FIREWALL" == 0 ]] || FIREWALL="${saved[FIREWALL]:-1}"
   [[ "$TLS_INTERNAL" == 1 ]] || TLS_INTERNAL="${saved[TLS_INTERNAL]:-0}"
+  [[ -n "$TERM_USER" ]] || TERM_USER="${saved[TERM_USER]:-}"
 }
 
 while (($#)); do
@@ -84,6 +90,7 @@ while (($#)); do
     --check) CHECK_ONLY=1 ;;
     --yes | -y) ASSUME_YES=1 ;;
     --tls-internal) TLS_INTERNAL=1 ;;
+    --term-user) TERM_USER="${2:-}"; shift ;;
     --force-os) FORCE_OS=1 ;;
     -h | --help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -108,6 +115,9 @@ TRAEFIK_RESOLVER="${TRAEFIK_RESOLVER_ARG:-$TRAEFIK_RESOLVER}"
 [[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] ||
   die "--domain must be a hostname like agent.example.com (no https://, no path)."
 DOMAIN="${DOMAIN,,}"
+TERM_USER="${TERM_USER:-dev}"
+[[ "$TERM_USER" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "--term-user must be a lowercase Linux user name."
+TERM_HOME="/home/$TERM_USER"
 
 # shellcheck disable=SC1091
 . /etc/os-release
@@ -166,6 +176,14 @@ if [[ "$PROXY" != caddy ]]; then
   [[ "$LISTEN" =~ ^[0-9.]+:[0-9]+$ ]] || die "--listen must look like 172.18.0.1:8787."
 fi
 
+# The terminal user's home becomes the vault's mount point, so it must be a user
+# the installer made, never an existing person's account.
+TERM_USER_STATE="will be created"
+if id "$TERM_USER" >/dev/null 2>&1; then
+  if [[ -r "$ETC/term-user" && "$(cat "$ETC/term-user")" == "$TERM_USER" ]]; then TERM_USER_STATE="exists (made by agentbox)"
+  else die "a user called '$TERM_USER' already exists. Pick another with --term-user NAME (for example --term-user agentdev)."; fi
+fi
+
 SSH_PORTS="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | sort -u | xargs || true)"
 [[ -n "$SSH_PORTS" ]] || SSH_PORTS="22"
 FREE_MB="$(df -Pm / | awk 'NR==2{print $4}')"
@@ -185,6 +203,7 @@ printf '  %-18s %s\n' \
   "agentbox listens" "$([[ "$PROXY" == caddy ]] && echo "unix:$SOCKET (Caddy only)" || echo "$LISTEN (trusting $TRUSTED)")" \
   "DNS for domain" "${RESOLVED:-does not resolve yet}" \
   "This server's IPs" "${LOCAL_IPS:-unknown}" \
+  "Terminals run as" "$TERM_USER ($TERM_USER_STATE); home $TERM_HOME is the encrypted vault" \
   "SSH port(s)" "$SSH_PORTS" \
   "Firewall (ufw)" "$([[ "$FIREWALL" == 1 && "$PROXY" == caddy ]] && echo "allow SSH, 80, 443 then enable" || echo "not changed")" \
   "Existing install" "${INSTALLED:-none}"
@@ -198,6 +217,7 @@ PROBLEMS=0
 if [[ "$PROXY" == traefik ]] && command -v docker >/dev/null; then
   warn "Docker hosts: any container or user that controls Docker is effectively root and can read AI logins stored here. A dedicated VPS is safer."
 fi
+[[ -e /dev/fuse ]] || warn "/dev/fuse is missing, so the terminal vault can't be unlocked (some containers and VPS types lack FUSE)."
 if ((PROBLEMS)); then die "fix the problems above first (or pass --force-os for an untested OS)."; fi
 if ((CHECK_ONLY)); then ok "Check finished. Nothing was changed."; exit 0; fi
 if ((!ASSUME_YES)); then
@@ -211,7 +231,8 @@ step "Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
 # Root: apt installs system packages. Build tools are only used to compile
 # better-sqlite3 if no prebuilt binary matches.
-PKGS=(ca-certificates curl git tar xz-utils tmux sqlite3 python3 make g++ iproute2)
+# tmux keeps terminal sessions alive; gocryptfs and fuse3 encrypt the terminal vault.
+PKGS=(ca-certificates curl git tar xz-utils tmux sqlite3 python3 make g++ iproute2 gocryptfs fuse3)
 if [[ "$PROXY" == caddy ]]; then PKGS+=(debian-keyring debian-archive-keyring apt-transport-https gnupg ufw fail2ban); fi
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends "${PKGS[@]}" >/dev/null
@@ -246,7 +267,26 @@ if [[ "$PROXY" == caddy ]] && ! id -nG caddy | tr ' ' '\n' | grep -qx agentbox-s
   usermod -aG agentbox-sock caddy  # Caddy may connect to the socket; nobody else.
   CADDY_RESTART=1
 fi
-ok "agentbox, agentbox-build, group agentbox-sock"
+# The terminal user: a normal shell for the browser terminals, with no password,
+# no sudo and no SSH login. Its home starts empty: the vault is mounted there.
+# agentbox-web reaches the terminal service through group agentbox-term.
+getent group agentbox-term >/dev/null || groupadd --system agentbox-term
+if ! id "$TERM_USER" >/dev/null 2>&1; then
+  useradd --user-group --home-dir "$TERM_HOME" --no-create-home --shell /bin/bash \
+    --comment "agentbox terminals" "$TERM_USER"
+  passwd --lock "$TERM_USER" >/dev/null
+fi
+install -d -m 0755 "$ETC"
+echo "$TERM_USER" >"$ETC/term-user"
+# While the vault is unlocked, its home is a mount that only that user can open.
+# (findmnt reads the mount table; even root can't look inside the mount itself.)
+findmnt -rno TARGET --mountpoint "$TERM_HOME" >/dev/null || install -d -m 0700 -o "$TERM_USER" -g "$TERM_USER" "$TERM_HOME"
+install -d -m 0700 -o "$TERM_USER" -g "$TERM_USER" "$VAULT_DIR"
+id -nG agentbox | tr ' ' '\n' | grep -qx agentbox-term || usermod -aG agentbox-term agentbox
+# Root: FUSE mounts need /dev/fuse open to users (Ubuntu's default is 0666; some
+# containers ship it as root-only).
+if [[ -c /dev/fuse && "$(stat -c %a /dev/fuse)" != 666 ]]; then chmod 0666 /dev/fuse; fi
+ok "agentbox, agentbox-build, $TERM_USER (terminals), groups agentbox-sock and agentbox-term"
 
 # ── 3. Node.js 24 (verified download) ────────────────────────────────────
 step "Installing Node.js 24"
@@ -290,6 +330,8 @@ runuser -u agentbox-build -- env -i "${BUILD_ENV[@]}" bash -euo pipefail -c '
   corepack pnpm --filter @agentbox/web build >/dev/null
   corepack pnpm --filter @agentbox/server build >/dev/null
   corepack pnpm --filter @agentbox/server deploy --prod --legacy --reporter=silent "$HOME/out/server"
+  corepack pnpm --filter @agentbox/termd build >/dev/null
+  corepack pnpm --filter @agentbox/termd deploy --prod --legacy --reporter=silent "$HOME/out/termd"
   cp -r apps/web/dist "$HOME/out/web"
   mkdir -p "$HOME/out/deploy" && cp deploy/install.sh "$HOME/out/deploy/"
 '
@@ -321,6 +363,7 @@ chmod 0600 "$ETC/secrets.env"
   if [[ "$PROXY" == caddy ]]; then echo "AGENTBOX_LISTEN=unix:$SOCKET"
   else echo "AGENTBOX_LISTEN=$LISTEN"; echo "AGENTBOX_TRUSTED_PROXIES=$TRUSTED"; fi
   echo "AGENTBOX_WEB_DIST=$PREFIX/current/web"
+  echo "AGENTBOX_TERMD_SOCKET=$TERM_SOCKET"
   echo "LOG_LEVEL=info"
 } >"$ETC/agentbox.env"
 chmod 0644 "$ETC/agentbox.env"
@@ -328,7 +371,7 @@ chmod 0644 "$ETC/agentbox.env"
   echo "DOMAIN=$DOMAIN"; echo "PROXY=$PROXY"; echo "EMAIL=$EMAIL"
   echo "LISTEN=$LISTEN"; echo "TRUSTED=$TRUSTED"; echo "TRAEFIK_DIR=$TRAEFIK_DIR"
   echo "TRAEFIK_RESOLVER=$TRAEFIK_RESOLVER"; echo "FIREWALL=$FIREWALL"; echo "TLS_INTERNAL=$TLS_INTERNAL"
-  echo "SRC_DIR=$SRC_DIR"
+  echo "SRC_DIR=$SRC_DIR"; echo "TERM_USER=$TERM_USER"
 } >"$ETC/install.conf"
 ok "$ETC/agentbox.env, $ETC/install.conf"
 
@@ -349,6 +392,8 @@ StartLimitIntervalSec=0
 Type=simple
 User=agentbox
 Group=agentbox-sock
+# Only to reach the terminal service's socket.
+SupplementaryGroups=agentbox-term
 EnvironmentFile=$ETC/agentbox.env
 EnvironmentFile=$ETC/secrets.env
 ExecStart=$PREFIX/node/bin/node $PREFIX/current/server/dist/main.mjs
@@ -384,9 +429,53 @@ SystemCallFilter=@system-service
 [Install]
 WantedBy=multi-user.target
 EOF
+# The terminal service runs as the terminal user. It is less sandboxed than
+# agentbox-web on purpose: the terminals are a normal shell where you install
+# and run CLIs, and the vault needs FUSE (fusermount3 is setuid, so
+# NoNewPrivileges stays off). It holds no agentbox secrets and can't read them.
+# KillMode=process: restarting or updating it keeps sessions and the unlocked vault.
+cat >/etc/systemd/system/$TERM_SERVICE.service <<UNIT
+[Unit]
+Description=agentbox terminals (tmux sessions and the encrypted vault)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=$TERM_USER
+Group=agentbox-term
+Environment=HOME=$TERM_HOME USER=$TERM_USER LOGNAME=$TERM_USER SHELL=/bin/bash LANG=C.UTF-8
+Environment=AGENTBOX_TERMD_SOCKET=$TERM_SOCKET
+Environment=AGENTBOX_TERMD_HOME=$TERM_HOME
+Environment=AGENTBOX_TERMD_VAULT=$VAULT_DIR/cipher
+# agentbox's own Node.js, so npm install -g works in the terminals out of the box.
+Environment=AGENTBOX_TERMD_PATH_EXTRA=$PREFIX/node/bin
+ExecStart=$PREFIX/node/bin/node $PREFIX/current/termd/dist/main.mjs
+WorkingDirectory=/
+Restart=on-failure
+RestartSec=3
+KillMode=process
+RuntimeDirectory=agentbox-termd
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+UMask=0077
+# No Protect*/Private* options here: they give the service its own mount
+# namespace or device list, and then the vault mount would be invisible
+# outside it, or /dev/fuse and new terminals (/dev/ptmx) would be blocked.
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 ln -sfn "$RELEASE" "$PREFIX/current.tmp" && mv -Tf "$PREFIX/current.tmp" "$PREFIX/current"
 systemctl daemon-reload
-systemctl enable --quiet "$SERVICE"
+systemctl enable --quiet "$TERM_SERVICE" "$SERVICE"
+systemctl restart "$TERM_SERVICE"
+for _ in $(seq 1 20); do [[ -S "$TERM_SOCKET" ]] && break; sleep 0.5; done
+[[ -S "$TERM_SOCKET" ]] || { journalctl -u "$TERM_SERVICE" -n 30 --no-pager >&2 || true; die "agentbox-termd didn't start (log above)."; }
+ok "agentbox-termd is running (terminals as $TERM_USER)"
 systemctl restart "$SERVICE"
 
 health() {
@@ -410,9 +499,10 @@ cat >/usr/local/sbin/agentbox <<'EOF'
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run it with sudo: sudo agentbox $*" >&2; exit 1; }
 case "${1:-help}" in
-  status) exec systemctl status agentbox-web --no-pager ;;
-  logs) exec journalctl -u agentbox-web -n "${2:-200}" --no-pager ;;
-  restart) exec systemctl restart agentbox-web ;;
+  status) exec systemctl status agentbox-web agentbox-termd --no-pager ;;
+  logs) exec journalctl -u agentbox-web -u agentbox-termd -n "${2:-200}" --no-pager ;;
+  # Restarting keeps terminal sessions and the unlocked vault running.
+  restart) exec systemctl restart agentbox-termd agentbox-web ;;
   update)
     src="$(awk -F= '$1=="SRC_DIR"{print $2}' /etc/agentbox/install.conf)"
     git -C "$src" pull --ff-only
@@ -587,5 +677,6 @@ cat <<EOF
       sudo agentbox setup-link
 
   and open the link on the phone or computer where you want your passkey.
-  Back up $ETC/secrets.env and /var/lib/agentbox together.
+  Back up $ETC/secrets.env and /var/lib/agentbox together. The terminal vault
+  ($VAULT_DIR) is stored encrypted; back it up too to keep your CLI logins.
 EOF

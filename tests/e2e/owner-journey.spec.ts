@@ -275,7 +275,31 @@ ${machine.home}/.local/share:
     await provider.stop();
   }
 
+  // ── Terminals: a live shell on the server ─────────────────────
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .first()
+    .getByRole('link', { name: 'Terminals' })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Terminals', level: 1 })).toBeVisible();
+  await page.getByLabel('Name', { exact: true }).fill('e2e');
+  await page.getByRole('button', { name: 'Open' }).first().click();
+  await expect(page).toHaveURL(/\/terminals\/e2e$/);
+  await expect(page.getByText('Connected')).toBeVisible();
+  // Give the new session a moment to settle its size, then type.
+  await page.waitForTimeout(800);
+  await page.keyboard.type('echo E2E-$((40+2))');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.xterm-rows')).toContainText('E2E-42');
+  // Leaving only detaches: the session is still listed.
+  await page.getByRole('link', { name: 'Back to terminals' }).click();
+  await expect(page.getByText('e2e', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Close e2e' }).click();
+  await page.getByRole('button', { name: 'Close session' }).click();
+  await expect(page.getByText('No sessions')).toBeVisible();
+
   await page.goto('/activity');
+  await expect(page.getByText('Terminal opened')).toBeVisible();
   await expect(page.getByText('Machine used for the first time')).toBeVisible();
   await expect(page.getByText('Machine stopped')).toBeVisible();
 

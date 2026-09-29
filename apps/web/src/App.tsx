@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { AppShell } from './components/Layout.tsx';
 import { BrandMark } from './components/Brand.tsx';
 import { navigate, usePath } from './lib/router.ts';
@@ -6,13 +6,20 @@ import { Activity } from './screens/Activity.tsx';
 import { Home } from './screens/Home.tsx';
 import { Machines } from './screens/Machines.tsx';
 import { Security } from './screens/Security.tsx';
+import { Terminals } from './screens/Terminals.tsx';
 import { SetupWizard } from './screens/SetupWizard.tsx';
 import { Recovery, SignIn } from './screens/SignIn.tsx';
 import { NotFound, ServerError, SetupNeeded } from './screens/StatusScreens.tsx';
 import { useAuth } from './state/auth.tsx';
 
+// xterm.js is big; load it only when a terminal is opened.
+const TerminalView = lazy(async () => ({
+  default: (await import('./screens/TerminalView.tsx')).TerminalView,
+}));
+
 const SIGNED_IN_SCREENS: Record<string, () => React.JSX.Element> = {
   '/': Home,
+  '/terminals': Terminals,
   '/machines': Machines,
   '/security': Security,
   '/activity': Activity,
@@ -56,6 +63,16 @@ export function App() {
   }
 
   if (path === '/signin' || path === '/recovery') return <Redirect to="/" />;
+  const terminal = /^\/terminals\/([^/]+)$/.exec(path)?.[1];
+  if (terminal) {
+    // Full screen: the terminal gets all the room, on phones too.
+    const name = decodeURIComponent(terminal);
+    return (
+      <Suspense fallback={<Splash />}>
+        <TerminalView key={name} name={name} />
+      </Suspense>
+    );
+  }
   const Screen = SIGNED_IN_SCREENS[path];
   if (!Screen) return <NotFound />;
   return (

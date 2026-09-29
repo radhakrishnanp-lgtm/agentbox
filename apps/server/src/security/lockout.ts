@@ -109,4 +109,12 @@ export const POLICIES = {
     maxLockMs: 24 * 60 * MIN,
     message: 'Too many failed sign-in attempts from this network. Try again later.',
   },
+  /** 5 wrong vault passwords → 15 min, doubling to 24 h. */
+  vault: {
+    maxFailures: 5,
+    windowMs: 15 * MIN,
+    baseLockMs: 15 * MIN,
+    maxLockMs: 24 * 60 * MIN,
+    message: 'Too many wrong vault passwords. Unlocking is paused for a while.',
+  },
 } satisfies Record<string, LockoutPolicy>;

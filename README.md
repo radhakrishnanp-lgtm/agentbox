@@ -2,7 +2,11 @@
 
 A self-hosted gateway that keeps your AI coding CLI logins (Claude Code, Grok, Kimi and others) on one VPS you control. You reach them from any browser through a web terminal protected by passkeys, and GPU servers join through locked-down reverse SSH tunnels that never see your AI credentials.
 
-**Status:** Milestone 1 of 7 is done (setup, passkey sign-in, authenticator app, recovery codes, sessions, audit log, web UI), the installer is ready, and so is the key gateway below. The web terminal comes next. See [PROJECT_STATE.md](PROJECT_STATE.md).
+**Status:** Milestones 1 and 2 of 7 are done: setup, passkey sign-in, authenticator app, recovery codes, sessions, audit log, the key gateway below, and web terminals with an encrypted vault for CLI logins. Device approval comes next. See [PROJECT_STATE.md](PROJECT_STATE.md).
+
+## Terminals in your browser
+
+Open a terminal on the server from any browser, phone included. Sessions keep running when you close the tab. Install your AI CLIs there and sign in once: their logins live in an encrypted vault on the server, locked with a password only you know. See [docs/TERMINALS.md](docs/TERMINALS.md), including what the vault can and can't protect against.
 
 ## Use the AI CLIs directly on any computer
 

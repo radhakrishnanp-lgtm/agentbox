@@ -8,8 +8,8 @@ Updated 2026-09-29. Plan: `MASTER_PLAN.md` (in the project files).
 | --- | ---------------------------------------------------------------------------------- | -------- |
 | 1   | Foundation: setup link, passkey, TOTP, recovery codes, sessions, audit log, web UI | **Done** |
 | 1b  | Key gateway: AI keys stay on the VPS, machines get a revocable pass                | **Done** |
-| 2   | Web terminal over tmux (agentbox-termd as `dev`)                                   | Next     |
-| 3   | Device approval with number matching, sessions list, IP re-check, fail2ban         | Planned  |
+| 2   | Web terminal over tmux (agentbox-termd as `dev`) with an encrypted vault           | **Done** |
+| 3   | Device approval with number matching, sessions list, IP re-check, fail2ban         | Next     |
 | 4   | GPU nodes: enrollment, connect.sh, tunnel-keys, tunnelctl, sshd test in CI         | Planned  |
 | 5   | Panic button, audit UI filters, Telegram alerts                                    | Planned  |
 | 6   | install.sh, backups, README / ARCHITECTURE / API / SECURITY / RUNBOOK              | Planned  |
@@ -61,6 +61,23 @@ Installed in the Ubuntu 24.04 lab in Caddy mode over HTTPS, with an HTTPS stand-
 | All, after Stop                            | Refused at once with "this machine was stopped in agentbox" (403, so Claude Code no longer retries a 401 for 3 minutes). |
 
 The provider log never contained `abx_`. Recipes were first checked in an isolated network namespace, which showed no other traffic (telemetry, update checks, stored logins). Not covered: real provider endpoints (no real keys were used) and interactive TUIs in the lab (checked only in the isolated runner).
+
+## Terminals test record (2026-09-29)
+
+Automated: termd with real tmux and gocryptfs (create, rename, kill, unsafe names, clean environment, detach keeps the session, vault create/lock/unlock/reset, only ciphertext on disk after lock); the web API and WebSocket against a real termd (session and origin checks, cut-off at sign-out, typing keeps the session alive, service down, fresh passkey for vault create/reset/auto-unlock, wrong-password lockout, auto-unlock after restart); and the Playwright journey (open a terminal, type, see output, detach, close).
+
+Lab (Ubuntu 24.04, Caddy mode, installed with `deploy/install.sh`, real Chromium and a virtual passkey):
+
+| Check                                   | Result                                                                                                                                          |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create the vault in the browser         | Home is a `fuse.gocryptfs` mount owned by `dev`.                                                                                                |
+| Install Claude Code in the web terminal | `npm install -g @anthropic-ai/claude-code` → `~/.local/bin/claude`, `2.1.284 (Claude Code)`; its first-run screen renders on desktop and phone. |
+| Root reads the unlocked vault           | `ls /home/dev` and `cat /home/dev/.npmrc` as root: Permission denied.                                                                           |
+| Restart agentbox-termd                  | The session keeps running.                                                                                                                      |
+| Lock                                    | Sessions stop, home is empty, the ciphertext has no readable names or contents.                                                                 |
+| Unlock (wrong, then right password)     | Wrong one refused; after unlock Claude Code is still installed.                                                                                 |
+
+Not covered: the native Claude Code installer (`claude.ai/install.sh`; its download host is blocked in the lab), signing in to a real CLI account (no real credentials are used in tests), and real reboots with auto-unlock (covered by the integration test of the auto-unlock loop).
 
 ## Installer test record (2026-09-29)
 

@@ -41,7 +41,19 @@ export type AuditAction =
   | 'machine.ip_changed'
   | 'machine.blocked_ip'
   | 'machine.limit_hit'
-  | 'machine.bad_pass_lockout';
+  | 'machine.bad_pass_lockout'
+  | 'terminal.created'
+  | 'terminal.renamed'
+  | 'terminal.killed'
+  | 'terminal.opened'
+  | 'vault.created'
+  | 'vault.unlocked'
+  | 'vault.unlock_failed'
+  | 'vault.locked'
+  | 'vault.reset'
+  | 'vault.auto_unlock_on'
+  | 'vault.auto_unlock_off'
+  | 'vault.auto_unlock_failed';
 
 export interface AuditInput {
   actor: string;
