@@ -282,6 +282,9 @@ echo "$TERM_USER" >"$ETC/term-user"
 mountpoint -q "$TERM_HOME" || install -d -m 0700 -o "$TERM_USER" -g "$TERM_USER" "$TERM_HOME"
 install -d -m 0700 -o "$TERM_USER" -g "$TERM_USER" "$VAULT_DIR"
 id -nG agentbox | tr ' ' '\n' | grep -qx agentbox-term || usermod -aG agentbox-term agentbox
+# Root: FUSE mounts need /dev/fuse open to users (Ubuntu's default is 0666; some
+# containers ship it as root-only).
+if [[ -c /dev/fuse && "$(stat -c %a /dev/fuse)" != 666 ]]; then chmod 0666 /dev/fuse; fi
 ok "agentbox, agentbox-build, $TERM_USER (terminals), groups agentbox-sock and agentbox-term"
 
 # ── 3. Node.js 24 (verified download) ────────────────────────────────────
@@ -456,9 +459,9 @@ RuntimeDirectory=agentbox-termd
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 UMask=0077
-ProtectKernelModules=yes
-ProtectKernelLogs=yes
-ProtectClock=yes
+# No Protect*/Private* options here: they give the service its own mount
+# namespace or device list, and then the vault mount would be invisible
+# outside it, or /dev/fuse and new terminals (/dev/ptmx) would be blocked.
 LockPersonality=yes
 RestrictRealtime=yes
 
