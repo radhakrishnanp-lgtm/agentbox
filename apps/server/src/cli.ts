@@ -5,6 +5,9 @@
  *   agentbox setup-link            one-time link for first setup (30 min)
  *   agentbox setup-link --reset    wipe all sign-in methods and devices, then link
  *   agentbox audit-verify          check the audit log's hash chain
+ *   agentbox machines              list machines that use the key gateway
+ *   agentbox machines stop <name>  stop one machine's pass (also cuts live streams)
+ *   agentbox machines stop-all     stop every machine's pass
  */
 import { loadConfig } from './config/env.ts';
 import { databasePath, openDb } from './db/client.ts';
@@ -13,7 +16,9 @@ import { AppError } from './lib/errors.ts';
 import { createServices } from './services.ts';
 
 function usage(): never {
-  process.stderr.write('Usage: agentbox <setup-link [--reset] | audit-verify>\n');
+  process.stderr.write(
+    'Usage: agentbox <setup-link [--reset] | audit-verify | machines [stop <name> | stop-all]>\n',
+  );
   process.exit(2);
 }
 
@@ -44,6 +49,44 @@ function run(): void {
             : `AUDIT LOG TAMPERED: chain breaks at entry ${r.brokenAt} (${r.checked} entries were fine).\n`,
         );
         process.exitCode = r.ok ? 0 : 1;
+        break;
+      }
+      case 'machines': {
+        const [sub, ...rest] = args;
+        const all = s.gateway.listMachines();
+        if (sub === undefined) {
+          const active = all.filter((m) => m.revokedAt === null);
+          if (active.length === 0) process.stdout.write('No machines.\n');
+          for (const m of active) {
+            const seen = m.lastSeenAt ? new Date(m.lastSeenAt).toISOString() : 'never';
+            process.stdout.write(
+              `${m.name}\t${m.passPrefix}…\tlast seen ${seen}\t${m.lastIp ?? ''}\n`,
+            );
+          }
+        } else if (sub === 'stop-all' && rest.length === 0) {
+          const n = s.gateway.revokeAllMachines('cli');
+          process.stdout.write(
+            `Stopped ${n} machine${n === 1 ? '' : 's'}. Live requests end within 2 seconds.\n`,
+          );
+        } else if (sub === 'stop' && rest.length > 0) {
+          const name = rest.join(' ');
+          const matches = all.filter(
+            (m) => m.revokedAt === null && (m.name === name || m.id === name),
+          );
+          const [match] = matches;
+          if (!match || matches.length !== 1) {
+            throw new AppError(
+              'not_found',
+              matches.length === 0
+                ? `No active machine called "${name}".`
+                : `Several machines are called "${name}"; use its id instead.`,
+            );
+          }
+          s.gateway.revokeMachine(match.id, 'cli');
+          process.stdout.write(`Stopped "${name}". Live requests end within 2 seconds.\n`);
+        } else {
+          usage();
+        }
         break;
       }
       default:

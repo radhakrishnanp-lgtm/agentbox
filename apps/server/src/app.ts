@@ -20,8 +20,11 @@ import { baseCookieOptions, cookieNames } from './auth/cookies.ts';
 import { registerSecurity } from './http/security.ts';
 import { AppError } from './lib/errors.ts';
 import { newId } from './lib/ids.ts';
+import { gatewayRoutes } from './gateway/relay.ts';
+import { machineScriptRoutes } from './gateway/script.ts';
 import { auditRoutes } from './routes/audit.ts';
 import { authRoutes } from './routes/auth.ts';
+import { gatewayAdminRoutes } from './routes/gateway.ts';
 import { healthRoutes } from './routes/health.ts';
 import { securityRoutes } from './routes/security.ts';
 import { setupRoutes } from './routes/setup.ts';
@@ -29,6 +32,8 @@ import type { Services } from './services.ts';
 
 export interface BuildOptions {
   logger?: FastifyServerOptions['logger'];
+  /** Tests: capture the real production log output. */
+  logStream?: { write(line: string): void };
 }
 
 export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<FastifyInstance> {
@@ -37,9 +42,24 @@ export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<Fa
     logger: opts.logger ?? {
       level: config.logLevel,
       redact: {
-        paths: ['req.headers.cookie', 'req.headers.authorization', 'res.headers["set-cookie"]'],
+        paths: [
+          'req.headers.cookie',
+          'req.headers.authorization',
+          'req.headers["x-api-key"]',
+          'req.headers["x-goog-api-key"]',
+          'res.headers["set-cookie"]',
+        ],
         censor: '[redacted]',
       },
+      // Never log query strings: a Gemini client may put its key (our pass) in ?key=.
+      serializers: {
+        req: (req) => ({
+          method: req.method,
+          url: req.url.split('?')[0] ?? '',
+          ip: req.ip,
+        }),
+      },
+      ...(opts.logStream ? { stream: opts.logStream } : {}),
     },
     // Only Caddy can reach the Unix socket, so its X-Forwarded-For is trustworthy.
     // Over TCP, forwarded headers are believed only from the configured proxy
@@ -119,6 +139,9 @@ export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<Fa
   await app.register(authRoutes(s));
   await app.register(securityRoutes(s));
   await app.register(auditRoutes(s));
+  await app.register(gatewayAdminRoutes(s));
+  await app.register(gatewayRoutes(s));
+  await app.register(machineScriptRoutes(s));
 
   const webDist = config.webDist ? resolve(config.webDist) : undefined;
   const hasWeb = webDist !== undefined && existsSync(join(webDist, 'index.html'));

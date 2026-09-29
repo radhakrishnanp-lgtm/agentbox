@@ -471,7 +471,9 @@ case "$PROXY" in
 # agentbox (written by deploy/install.sh)
 $DOMAIN {
 $([[ "$TLS_INTERNAL" == 1 ]] && echo "	tls internal")
-	encode zstd gzip
+	# The key gateway (/gw/) streams AI answers; compressing would hold chunks back.
+	@pages not path /gw/*
+	encode @pages zstd gzip
 	reverse_proxy unix/$SOCKET
 	header -Server
 }
@@ -537,6 +539,9 @@ EOF
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
         proxy_read_timeout 1h;
+        # Key gateway: stream AI answers as they arrive, allow large prompts.
+        proxy_buffering off;
+        client_max_body_size 32m;
       }
     }
 EOF

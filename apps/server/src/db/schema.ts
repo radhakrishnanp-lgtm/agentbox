@@ -210,3 +210,78 @@ export const setting = sqliteTable('setting', {
   value: text('value', { mode: 'json' }).notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
+
+/** AI provider keys for the key gateway. The key itself is AES-256-GCM encrypted. */
+export const aiKey = sqliteTable(
+  'ai_key',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    /** Part of the gateway URL: /gw/<slug>/… */
+    slug: text('slug').notNull(),
+    preset: text('preset').notNull(),
+    upstream: text('upstream').notNull(),
+    auth: text('auth', {
+      enum: ['x-api-key', 'bearer', 'x-goog-api-key', 'anthropic-oauth'],
+    }).notNull(),
+    cli: text('cli', { enum: ['claude', 'codex', 'grok', 'kimi', 'gemini'] }),
+    /** Model the machine's CLI uses by default (needed when the provider isn't the CLI's own). */
+    model: text('model'),
+    secretEnc: text('secret_enc').notNull(),
+    hint: text('hint').notNull(),
+    lastUsedAt: integer('last_used_at'),
+    revokedAt: integer('revoked_at'),
+    ...timestamps,
+  },
+  (t) => [index('ai_key_slug').on(t.slug)],
+);
+
+/** A computer allowed to use the gateway with its own pass (stored as a hash). */
+export const machine = sqliteTable(
+  'machine',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    passHash: text('pass_hash').notNull(),
+    passPrefix: text('pass_prefix').notNull(),
+    keyIds: text('key_ids', { mode: 'json' }).$type<string[]>().notNull(),
+    ipRules: text('ip_rules', { mode: 'json' }).$type<string[]>().notNull(),
+    rpm: integer('rpm').notNull(),
+    dailyTokenLimit: integer('daily_token_limit'),
+    expiresAt: integer('expires_at'),
+    lastSeenAt: integer('last_seen_at'),
+    lastIp: text('last_ip'),
+    revokedAt: integer('revoked_at'),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex('machine_pass_hash').on(t.passHash)],
+);
+
+/** One row per relayed request: metadata only, never prompts or answers. */
+export const gatewayUsage = sqliteTable(
+  'gateway_usage',
+  {
+    id: text('id').primaryKey(),
+    ts: integer('ts').notNull(),
+    /** UTC day number (ts / 86 400 000), for daily limits. */
+    day: integer('day').notNull(),
+    machineId: text('machine_id')
+      .notNull()
+      .references(() => machine.id, { onDelete: 'cascade' }),
+    keyId: text('key_id').notNull(),
+    keySlug: text('key_slug').notNull(),
+    method: text('method').notNull(),
+    path: text('path').notNull(),
+    model: text('model'),
+    status: integer('status').notNull(),
+    durationMs: integer('duration_ms').notNull(),
+    requestBytes: integer('request_bytes').notNull(),
+    responseBytes: integer('response_bytes').notNull(),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+  },
+  (t) => [
+    index('gateway_usage_machine_day').on(t.machineId, t.day),
+    index('gateway_usage_ts').on(t.ts),
+  ],
+);

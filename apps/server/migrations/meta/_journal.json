@@ -15,6 +15,13 @@
       "when": 1790664277619,
       "tag": "0001_audit_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790681332883,
+      "tag": "0002_key_gateway",
+      "breakpoints": true
     }
   ]
 }
