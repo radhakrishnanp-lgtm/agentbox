@@ -2,9 +2,11 @@
 
 A self-hosted gateway that keeps your AI coding CLI logins (Claude Code, Grok, Kimi and others) on one VPS you control. You reach them from any browser through a web terminal protected by passkeys, and GPU servers join through locked-down reverse SSH tunnels that never see your AI credentials.
 
-**Status:** Milestone 1 of 7 is done (setup, passkey sign-in, authenticator app, recovery codes, sessions, audit log, web UI). The web terminal comes next, then the installer. See [PROJECT_STATE.md](PROJECT_STATE.md).
+**Status:** Milestone 1 of 7 is done (setup, passkey sign-in, authenticator app, recovery codes, sessions, audit log, web UI), and the installer is ready. The web terminal comes next. See [PROJECT_STATE.md](PROJECT_STATE.md).
 
-Installing on a server isn't supported yet. The installer (`deploy/install.sh` for Ubuntu 24.04) arrives right after the web terminal.
+## Install
+
+See [docs/install](docs/install/README.md). There are two step-by-step guides you can hand to an AI agent on your server: one for a fresh VPS and one for a server that already runs websites (Dokploy, Traefik, nginx...). The installer supports Ubuntu 24.04 and 26.04.
 
 ## Development
 

@@ -42,8 +42,9 @@ export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<Fa
       },
     },
     // Only Caddy can reach the Unix socket, so its X-Forwarded-For is trustworthy.
-    // Over TCP (local development) forwarded headers are ignored.
-    trustProxy: config.listen.kind === 'unix',
+    // Over TCP, forwarded headers are believed only from the configured proxy
+    // (for example Traefik in Docker); otherwise they are ignored.
+    trustProxy: config.listen.kind === 'unix' ? true : (config.trustedProxies ?? false),
     genReqId: () => newId(),
     requestIdHeader: false,
     bodyLimit: 64 * 1024,

@@ -45,3 +45,16 @@ Known gaps carried forward:
 - Web bundle is ~500 KB (154 KB gzipped) because Zod validation is shared with the browser.
 - Recovery codes can't be regenerated from the UI yet (Milestone 3).
 - Approving a new device from an already signed-in device comes in Milestone 3; today it's passkey + TOTP.
+
+## Installer test record (2026-09-29)
+
+Tested in a systemd lab (privileged containers), with a real Chromium and a virtual passkey going through the installed proxy:
+
+| Case                               | Result                                                                                                                                                                                             |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ubuntu 24.04, Caddy mode           | Install, re-run (secrets kept, 3 releases kept), reboot recovery, and full setup + passkey sign-in over HTTPS. Cookies are `__Host-`, Secure, SameSite=Strict, and the real client IP is recorded. |
+| Ubuntu 26.04, Caddy mode           | Install and full sign-in journey. systemd 259 can't boot on the lab's cgroup v1 host, so services ran through a lab-only systemctl stand-in; the unit itself was verified on 24.04.                |
+| Traefik v3.6 mode (Dokploy layout) | File-provider route, secure cookies, and the client IP taken from X-Forwarded-For only when it comes from the trusted subnet. Upstream detection verified for bridge and Swarm overlay networks.   |
+| Proxy mode switches                | traefik → external → re-run: old routes removed, and trusted proxies not carried across modes.                                                                                                     |
+
+Not covered by the lab: real Let's Encrypt issuance (the lab uses `tls internal`), and Caddy's official apt repository (blocked by the lab's network, so the Ubuntu-package fallback was used).

@@ -22,6 +22,6 @@ await build({
   legalComments: 'none',
   // Keep dependencies (and their deep imports like drizzle-orm/better-sqlite3) external.
   external: external.flatMap((d) => [d, `${d}/*`]),
-  logLevel: 'info',
+  logLevel: process.env.CI ? 'warning' : 'info',
 });
 cpSync('migrations', 'dist/migrations', { recursive: true });

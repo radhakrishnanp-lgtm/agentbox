@@ -203,4 +203,26 @@ describe('environment validation', () => {
     expect(() => loadConfig({ ...base, AGENTBOX_RP_ID: 'evil.example' })).toThrow(/AGENTBOX_RP_ID/);
     expect(() => loadConfig({})).toThrow(/AGENTBOX_ORIGIN/);
   });
+
+  it('allows a private bridge address behind a trusted reverse proxy, never a public one', () => {
+    const c = loadConfig({
+      ...base,
+      AGENTBOX_LISTEN: '172.18.0.1:8787',
+      AGENTBOX_TRUSTED_PROXIES: '172.18.0.0/16, 10.0.0.5',
+    });
+    expect(c.listen).toEqual({ kind: 'tcp', host: '172.18.0.1', port: 8787 });
+    expect(c.trustedProxies).toEqual(['172.18.0.0/16', '10.0.0.5']);
+    expect(loadConfig({ ...base, AGENTBOX_LISTEN: '192.168.1.2:8787' }).trustedProxies).toBe(
+      undefined,
+    );
+    for (const host of ['8.8.8.8', '172.32.0.1', '0.0.0.0', '192.169.1.1', '10.0.0']) {
+      expect(() => loadConfig({ ...base, AGENTBOX_LISTEN: `${host}:8787` })).toThrow(
+        /never a public address/,
+      );
+    }
+    expect(() =>
+      loadConfig({ ...base, AGENTBOX_LISTEN: '127.0.0.1:8787', AGENTBOX_TRUSTED_PROXIES: 'nope' }),
+    ).toThrow();
+    expect(() => loadConfig({ ...base, AGENTBOX_TRUSTED_PROXIES: '127.0.0.1' })).toThrow();
+  });
 });
