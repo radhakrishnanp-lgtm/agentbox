@@ -119,7 +119,18 @@ export class GatewayStore {
         'This provider needs a model name. Copy it from their docs.',
       );
     }
-    if (/\s/.test(input.secret)) {
+    // A Grok login key has nothing to store: tokens come from the vault's login.
+    const secret = preset.noSecret ? '' : input.secret;
+    if (!preset.noSecret && secret.length < 8) {
+      throw new AppError('bad_request', 'Paste the whole key.');
+    }
+    if (preset.noSecret && auth !== preset.auth) {
+      throw new AppError('bad_request', 'This one can only be used as a login.');
+    }
+    if (!preset.noSecret && auth === 'grok-login') {
+      throw new AppError('bad_request', 'Pick “SuperGrok login” for that.');
+    }
+    if (/\s/.test(secret)) {
       throw new AppError('bad_request', 'The key has a space or line break in it. Paste it again.');
     }
     if (this.keyBySlug(input.slug)) {
@@ -136,8 +147,8 @@ export class GatewayStore {
       auth,
       cli,
       model,
-      secretEnc: this.#box.encrypt(input.secret, `ai_key:${id}`),
-      hint: input.secret.slice(-4),
+      secretEnc: this.#box.encrypt(secret, `ai_key:${id}`),
+      hint: preset.noSecret ? 'VPS login' : secret.slice(-4),
       lastUsedAt: null,
       revokedAt: null,
       createdAt: now,

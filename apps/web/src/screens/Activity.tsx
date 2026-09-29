@@ -35,6 +35,7 @@ const LABELS: Record<string, string> = {
   'machine.ip_changed': 'Machine used from a new address',
   'machine.blocked_ip': 'Machine pass used from a blocked address',
   'machine.limit_hit': 'Machine reached a limit',
+  'machine.grok_token': 'Machine got a Grok sign-in token',
   'machine.bad_pass_lockout': 'Address locked after wrong machine passes',
   'terminal.created': 'Terminal session started',
   'terminal.renamed': 'Terminal session renamed',

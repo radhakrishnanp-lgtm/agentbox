@@ -20,7 +20,15 @@ export type TermdRequest =
   /** Checks a password without changing anything (before auto-unlock stores it). */
   | { op: 'vault.verify'; password: string }
   | { op: 'vault.lock' }
-  | { op: 'vault.reset' };
+  | { op: 'vault.reset' }
+  /** A short-lived access token from the Grok login in the vault (for machines). */
+  | { op: 'grok.token' };
+
+export interface TermdGrokToken {
+  token: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+}
 
 export interface TermdOverview {
   vault: VaultState;
