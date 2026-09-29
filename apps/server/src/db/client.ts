@@ -8,7 +8,11 @@ import * as schema from './schema.ts';
 
 export type Db = BetterSQLite3Database<typeof schema> & { $client: Database.Database };
 
-const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../migrations');
+const here = dirname(fileURLToPath(import.meta.url));
+// Bundled build: dist/main.mjs next to dist/migrations. Source: src/db/ → ../../migrations.
+const MIGRATIONS_DIR = [join(here, 'migrations'), join(here, '../../migrations')].find((d) =>
+  existsSync(join(d, 'meta')),
+) as string;
 
 /**
  * Opens (and migrates) the database. `path` ':memory:' is used by tests.

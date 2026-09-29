@@ -136,7 +136,8 @@ export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<Fa
   }
 
   app.setNotFoundHandler((request, reply) => {
-    const isPage = request.method === 'GET' && !request.url.startsWith('/api/');
+    const isPage =
+      (request.method === 'GET' || request.method === 'HEAD') && !request.url.startsWith('/api/');
     if (isPage && hasWeb) {
       // Single-page app: the UI router renders the right screen (or its own 404).
       return reply.header('Cache-Control', 'no-store').sendFile('index.html');

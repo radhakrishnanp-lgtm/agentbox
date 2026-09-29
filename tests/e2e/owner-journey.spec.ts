@@ -1,0 +1,158 @@
+/**
+ * The owner's first-day journey in a real browser, with Chrome's virtual
+ * authenticator standing in for a phone's passkey:
+ * setup link → passkey → authenticator app → recovery codes → home →
+ * sign out → passkey sign-in → a second browser approved with TOTP.
+ */
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { expect, test, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
+import { TOTP } from 'otpauth';
+import { e2eEnv } from './env.ts';
+
+function setupLink(): string {
+  const out = execFileSync(
+    process.execPath,
+    [join(import.meta.dirname, '../../apps/server/src/cli.ts'), 'setup-link'],
+    { env: { ...process.env, ...e2eEnv }, encoding: 'utf8' },
+  );
+  const match = /(http:\/\/\S+\/setup#[A-Za-z0-9_-]{43})/.exec(out);
+  if (!match?.[1]) throw new Error(`No setup link in CLI output:\n${out}`);
+  return match[1];
+}
+
+async function addAuthenticator(context: BrowserContext, page: Page) {
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('WebAuthn.enable');
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2',
+      transport: 'internal',
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  return { cdp, authenticatorId };
+}
+
+/** Fails the test on any CSP violation or uncaught error in the page. */
+function watchConsole(page: Page): string[] {
+  const problems: string[] = [];
+  page.on('console', (msg) => {
+    // Expected 4xx answers (like the deliberately wrong code) are logged by Chrome; skip those.
+    if (msg.type() === 'error' && !msg.text().startsWith('Failed to load resource')) {
+      problems.push(msg.text());
+    }
+  });
+  page.on('pageerror', (err) => problems.push(err.message));
+  return problems;
+}
+
+test('owner sets up agentbox and signs in on two devices', async ({ browser }) => {
+  const link = setupLink();
+
+  // ── Device 1: setup ─────────────────────────────────────────────
+  const laptop = await browser.newContext();
+  const page = await laptop.newPage();
+  const problems = watchConsole(page);
+  const first: { cdp: CDPSession; authenticatorId: string } = await addAuthenticator(laptop, page);
+
+  await page.goto(link);
+  await expect(page).toHaveURL(/\/setup$/); // token moved out of the address bar
+  await expect(page.getByRole('heading', { name: 'Set up agentbox' })).toBeVisible();
+  await page.getByRole('button', { name: 'Create passkey' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Add an authenticator app' })).toBeVisible();
+  await expect(page.getByRole('img', { name: /QR code/ })).toBeVisible();
+  await page.getByText("Can't scan? Enter the key by hand").click();
+  const secret = (await page.locator('details code').innerText()).replace(/\s/g, '');
+  const totp = new TOTP({ secret, digits: 6, period: 30, algorithm: 'SHA1' });
+
+  await page.getByLabel('6-digit code from the app').fill('000000');
+  await page.getByRole('button', { name: 'Verify code' }).click();
+  await expect(page.getByText("That code didn't match")).toBeVisible();
+
+  await page.getByLabel('6-digit code from the app').fill(totp.generate());
+  await page.getByRole('button', { name: 'Verify code' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Name this device' })).toBeVisible();
+  await page.getByLabel('Device name').fill('E2E laptop');
+  await page.getByRole('button', { name: 'Finish setup' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Save your recovery codes' })).toBeVisible();
+  const codes = page.getByRole('list', { name: 'Recovery codes' }).getByRole('listitem');
+  await expect(codes).toHaveCount(10);
+  await expect(codes.first()).toHaveText(/^[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}$/);
+  const continueButton = page.getByRole('button', { name: 'Continue to agentbox' });
+  await expect(continueButton).toBeDisabled();
+  await page.getByLabel("I've saved these codes somewhere safe").check();
+  await continueButton.click();
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByText('Signed in on E2E laptop.')).toBeVisible();
+
+  // The setup link is single-use.
+  const reuse = await laptop.newPage();
+  await reuse.goto(link);
+  await expect(reuse.getByRole('heading', { name: 'Setup link not valid' })).toBeVisible();
+  await reuse.close();
+
+  // ── Security page: the only passkey can't be removed ───────────
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .first()
+    .getByRole('link', { name: 'Security' })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Security', level: 1 })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Remove passkey/ })).toBeDisabled();
+  await expect(page.getByText('10 of 10 left')).toBeVisible();
+
+  // ── Sign out, then back in with the passkey ─────────────────────
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await page.goto('/security');
+  await expect(page).toHaveURL(/\/signin$/); // signed-out users are sent to sign-in
+  await page.getByRole('button', { name: 'Sign in with passkey' }).click();
+  await expect(page.getByText('Signed in on E2E laptop.')).toBeVisible();
+
+  // ── Device 2: same passkey (synced), new browser → needs TOTP ──
+  const { credentials } = await first.cdp.send('WebAuthn.getCredentials', {
+    authenticatorId: first.authenticatorId,
+  });
+  const phone = await browser.newContext();
+  const phonePage = await phone.newPage();
+  const phoneProblems = watchConsole(phonePage);
+  const second = await addAuthenticator(phone, phonePage);
+  for (const credential of credentials) {
+    await second.cdp.send('WebAuthn.addCredential', {
+      authenticatorId: second.authenticatorId,
+      credential,
+    });
+  }
+
+  await phonePage.goto('/');
+  await expect(phonePage).toHaveURL(/\/signin$/);
+  await phonePage.getByRole('button', { name: 'Sign in with passkey' }).click();
+  await expect(phonePage.getByRole('heading', { name: 'Approve this device' })).toBeVisible();
+  // The setup code's time step is spent (replay protection), so use the next one.
+  await phonePage
+    .getByLabel('6-digit code')
+    .fill(totp.generate({ timestamp: Date.now() + 30_000 }));
+  await phonePage.getByLabel('Name this device').fill('E2E phone');
+  await phonePage.getByRole('button', { name: 'Approve and sign in' }).click();
+  await expect(phonePage.getByText('Signed in on E2E phone.')).toBeVisible();
+
+  // ── Activity: events are recorded and the hash chain verifies ──
+  await page.goto('/activity');
+  await expect(page.getByText('Setup completed')).toBeVisible();
+  await expect(page.getByText('Device approved')).toBeVisible();
+  await page.getByRole('button', { name: 'Check integrity' }).click();
+  await expect(page.getByText('Log is intact')).toBeVisible();
+
+  expect(problems, 'console errors on device 1').toEqual([]);
+  expect(phoneProblems, 'console errors on device 2').toEqual([]);
+  await laptop.close();
+  await phone.close();
+});
