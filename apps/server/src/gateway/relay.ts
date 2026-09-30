@@ -69,6 +69,14 @@ const DROP_REQUEST = new Set([
   'x-agentbox',
 ]);
 const DROP_REQUEST_PATTERN = /^(x-forwarded-|cf-|sec-|x-amzn-)|(token|secret|password|cookie)/i;
+/** Kept although they match the pattern: flags, not credentials. */
+const KEEP_REQUEST = new Set([
+  // The Grok CLI marks subscription requests with "X-XAI-Token-Auth: xai-grok-cli".
+  'x-xai-token-auth',
+]);
+
+/** Where the Grok CLI sends a SuperGrok session's requests. */
+export const GROK_CHAT_PROXY = 'https://cli-chat-proxy.grok.com';
 
 const DROP_RESPONSE = new Set([
   'connection',
@@ -147,7 +155,8 @@ export function upstreamHeaders(
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(incoming)) {
     const n = name.toLowerCase();
-    if (value === undefined || DROP_REQUEST.has(n) || DROP_REQUEST_PATTERN.test(n)) continue;
+    if (value === undefined || DROP_REQUEST.has(n)) continue;
+    if (DROP_REQUEST_PATTERN.test(n) && !KEEP_REQUEST.has(n)) continue;
     out[n] = Array.isArray(value) ? value.join(', ') : value;
   }
   out['accept-encoding'] = 'identity';
@@ -159,6 +168,7 @@ export function upstreamHeaders(
       out['x-goog-api-key'] = secret;
       break;
     case 'bearer':
+    case 'grok-login':
       out['authorization'] = `Bearer ${secret}`;
       break;
     case 'anthropic-oauth': {
@@ -342,46 +352,37 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
     };
 
     /**
-     * A Grok login key has no provider to relay to: the machine's grok asks
-     * here for a short-lived access token (its auth_provider_command) and then
-     * talks to xAI itself. The refresh token never leaves termd.
+     * SuperGrok login keys. The machine's grok signs in with its own pass
+     * (`/_session`, its auth_provider_command) and sends every request here;
+     * agentbox adds the short-lived xAI token from the vault on the way to
+     * xAI. So the machine never holds an xAI token, and Stop cuts it off at once.
      */
-    const grokToken = async (
-      request: FastifyRequest,
-      reply: FastifyReply,
-      m: MachineRow,
-      key: AiKeyRow,
-      path: string,
-      started: number,
-    ) => {
-      if (path !== '/_token' || request.method !== 'GET') {
-        return fail(
-          reply,
-          404,
-          'not_found_error',
-          `“${key.slug}” hands out Grok sign-in tokens only. Run grok through the agentbox command on this machine.`,
-        );
+    const grokSession = (request: FastifyRequest, reply: FastifyReply, m: MachineRow) => {
+      const now = s.clock.now();
+      if (state.shouldAudit(`${m.id}:grok-session`, now)) {
+        s.audit.record({
+          actor: `machine:${m.id}`,
+          action: 'machine.grok_token',
+          targetType: 'machine',
+          targetId: m.id,
+          ip: request.ip,
+          details: { name: m.name },
+        });
       }
-      let status = 200;
+      reply.header('cache-control', 'no-store');
+      // The pass itself: grok then sends it to agentbox with each request.
+      return reply.send({
+        access_token: presentedPass(request, undefined),
+        expires_in: 3600,
+        issuer: 'https://auth.x.ai',
+      });
+    };
+
+    /** The vault's current xAI token, or a reply explaining why there is none. */
+    const vaultGrokToken = async (reply: FastifyReply): Promise<string | FastifyReply> => {
       try {
         const t = await s.terminals.client.request<TermdGrokToken>({ op: 'grok.token' });
-        const now = s.clock.now();
-        if (state.shouldAudit(`${m.id}:grok-token`, now)) {
-          s.audit.record({
-            actor: `machine:${m.id}`,
-            action: 'machine.grok_token',
-            targetType: 'machine',
-            targetId: m.id,
-            ip: request.ip,
-            details: { name: m.name, key: key.slug, expiresAt: iso(t.expiresAt) },
-          });
-        }
-        reply.header('cache-control', 'no-store');
-        return await reply.send({
-          access_token: t.token,
-          expires_in: Math.max(0, Math.floor((t.expiresAt - now) / 1000)),
-          issuer: 'https://auth.x.ai',
-        });
+        return t.token;
       } catch (err) {
         const message =
           err instanceof TermdRefused
@@ -391,25 +392,9 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             : err instanceof AppError
               ? err.message
               : 'could not get a Grok token.';
-        status = err instanceof TermdRefused && err.code !== 'internal' ? 409 : 503;
-        return await fail(reply, status, 'api_error', message);
-      } finally {
-        s.gateway.recordUsage({
-          ts: started,
-          machineId: m.id,
-          keyId: key.id,
-          keySlug: key.slug,
-          method: request.method,
-          path,
-          model: null,
-          status,
-          durationMs: Math.max(0, s.clock.now() - started),
-          requestBytes: 0,
-          responseBytes: 0,
-          inputTokens: null,
-          outputTokens: null,
-        });
-        s.gateway.touchKey(key.id);
+        const status = err instanceof TermdRefused && err.code !== 'internal' ? 409 : 503;
+        // 403, not 401, so grok shows the message instead of signing in again and again.
+        return fail(reply, status === 409 ? 403 : status, 'api_error', message);
       }
     };
 
@@ -535,7 +520,28 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
 
         seen(m, request.ip);
 
-        if (key.auth === 'grok-login') return grokToken(request, reply, m, key, path, started);
+        let secret: string;
+        let upstreamBase = key.upstream;
+        if (key.auth === 'grok-login') {
+          if (path === '/_session' && request.method === 'GET')
+            return grokSession(request, reply, m);
+          if (path === '/_token') {
+            // Older setups fetched the xAI token itself; that let it outlive Stop.
+            return fail(
+              reply,
+              403,
+              'permission_error',
+              'agentbox changed how Grok signs in on other computers. Run `agentbox-machine refresh` on this computer.',
+            );
+          }
+          const token = await vaultGrokToken(reply);
+          if (typeof token !== 'string') return token;
+          secret = token;
+          // Keys added before this change stored xAI's sign-in address instead.
+          if (upstreamBase === 'https://auth.x.ai') upstreamBase = GROK_CHAT_PROXY;
+        } else {
+          secret = s.gateway.revealSecret(key);
+        }
 
         const body = Buffer.isBuffer(request.body) ? request.body : undefined;
         const model = requestModel(body, path);
@@ -579,9 +585,9 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
 
         let upstream: Awaited<ReturnType<typeof upstreamRequest>>;
         try {
-          upstream = await upstreamRequest(`${key.upstream}${path}${query}`, {
+          upstream = await upstreamRequest(`${upstreamBase}${path}${query}`, {
             method: request.method as 'GET',
-            headers: upstreamHeaders(request.headers, key, s.gateway.revealSecret(key)),
+            headers: upstreamHeaders(request.headers, key, secret),
             ...(body && request.method !== 'GET' ? { body } : {}),
             signal: ctrl.signal,
             dispatcher,
@@ -590,7 +596,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           record();
           if (ctrl.signal.aborted) return reply;
           request.log.warn({ err: (err as Error).message, slug }, 'gateway upstream failed');
-          return fail(reply, 502, 'api_error', `could not reach ${new URL(key.upstream).host}.`);
+          return fail(reply, 502, 'api_error', `could not reach ${new URL(upstreamBase).host}.`);
         }
 
         answered = true;

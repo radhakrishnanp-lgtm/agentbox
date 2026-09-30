@@ -539,6 +539,51 @@ describe('who may use the relay', () => {
     );
   });
 
+  it('starts a stopped machine again, and deletes one for good', async () => {
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id]);
+    const call = () =>
+      gw({ url: '/gw/anthropic/v1/messages', headers: { 'x-api-key': pass }, payload: messages });
+    expect((await call()).statusCode).toBe(200);
+    await laptop.post(`/api/gateway/machines/${machine.id}/revoke`);
+    expect((await call()).statusCode).toBe(403);
+    // A stopped machine stays listed (and editable) until you delete it.
+    h.services.db
+      .update(machineTable)
+      .set({ revokedAt: h.clock.now() - 10 * DAY })
+      .where(eq(machineTable.id, machine.id))
+      .run();
+    await h.reauth(laptop);
+    const listed = (await laptop.get('/api/gateway')).json<{ machines: { id: string }[] }>();
+    expect(listed.machines.map((x) => x.id)).toEqual([machine.id]);
+    const renamed = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { name: 'gpu-renamed', renewDays: 30 },
+    });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+
+    // Starting needs a fresh check; stopping and deleting don't.
+    h.clock.advance(6 * 60_000);
+    expect((await laptop.post(`/api/gateway/machines/${machine.id}/start`)).statusCode).toBe(403);
+    await h.reauth(laptop);
+    const started = await laptop.post(`/api/gateway/machines/${machine.id}/start`);
+    expect(started.statusCode, started.body).toBe(200);
+    expect(started.json().revokedAt).toBeNull();
+    expect((await call()).statusCode).toBe(200);
+
+    h.clock.advance(6 * 60_000);
+    const del = await laptop.request({
+      method: 'DELETE',
+      url: `/api/gateway/machines/${machine.id}`,
+    });
+    expect(del.statusCode, del.body).toBe(200);
+    expect((await call()).statusCode).toBe(401);
+    expect((await laptop.get('/api/gateway')).json().machines).toEqual([]);
+    const actions = h.services.audit.page(50).entries.map((e) => e.action);
+    expect(actions).toEqual(expect.arrayContaining(['machine.started', 'machine.deleted']));
+  });
+
   it('keeps the address lock and limits when a pass is renewed', async () => {
     const key = await addKey();
     const { machine } = await addMachine([key.id], {
@@ -673,62 +718,100 @@ describe('SuperGrok login', () => {
     expect(custom.statusCode).toBe(400);
   });
 
-  it('hands a machine a short-lived token from the vault login, and nothing else', async () => {
+  /** Points the login key at the stand-in provider instead of xAI. */
+  function aimAtFake(keyId: string) {
+    h.services.db.update(aiKey).set({ upstream: provider.url }).where(eq(aiKey.id, keyId)).run();
+  }
+
+  it('signs grok in with the pass, and adds the vault login only on the way to xAI', async () => {
     const key = await loginKey();
+    aimAtFake(key.id);
     const { pass } = await addMachine([key.id]);
     const ask = vi
       .spyOn(h.services.terminals.client, 'request')
       .mockResolvedValue({ token: JWT, expiresAt: h.clock.now() + 3_600_000 });
-    const res = await gw({
+    const session = await gw({
       method: 'GET',
-      url: '/gw/supergrok/_token',
+      url: '/gw/supergrok/_session',
       headers: { authorization: `Bearer ${pass}` },
     });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.headers['cache-control']).toBe('no-store');
-    expect(res.json()).toEqual({
-      access_token: JWT,
+    expect(session.statusCode, session.body).toBe(200);
+    expect(session.headers['cache-control']).toBe('no-store');
+    // The machine gets its own pass back, never an xAI token.
+    expect(session.json()).toEqual({
+      access_token: pass,
       expires_in: 3600,
       issuer: 'https://auth.x.ai',
     });
-    expect(ask).toHaveBeenCalledWith({ op: 'grok.token' });
-    // Not a relay: nothing is forwarded anywhere.
+    expect(session.body).not.toContain(JWT);
+    expect(ask).not.toHaveBeenCalled();
+
     const chat = await gw({
       url: '/gw/supergrok/v1/chat/completions',
-      headers: { authorization: `Bearer ${pass}` },
-      payload: {},
+      headers: { authorization: `Bearer ${pass}`, 'x-xai-token-auth': 'xai-grok-cli' },
+      payload: { model: 'grok-code', messages: [{ role: 'user', content: 'hi' }] },
     });
-    expect(chat.statusCode).toBe(404);
-    expect(provider.seen).toHaveLength(0);
+    expect(chat.statusCode, chat.body).toBe(200);
+    expect(chat.body).not.toContain(JWT);
+    expect(ask).toHaveBeenCalledWith({ op: 'grok.token' });
+    const seen = provider.last();
+    expect(seen.url).toBe('/v1/chat/completions');
+    expect(seen.headers.authorization).toBe(`Bearer ${JWT}`);
+    expect(seen.headers['x-xai-token-auth']).toBe('xai-grok-cli');
+    expect(JSON.stringify(seen.headers)).not.toContain(pass);
     const actions = h.services.audit.page(20).entries.map((e) => e.action);
     expect(actions).toContain('machine.grok_token');
   });
 
-  it('needs a valid pass, and says clearly when the vault is locked', async () => {
+  it('cuts a stopped machine off at once, and says clearly when the vault is locked', async () => {
     const key = await loginKey();
+    aimAtFake(key.id);
     const { pass, machine } = await addMachine([key.id]);
     const ask = vi.spyOn(h.services.terminals.client, 'request');
-    const anon = await gw({ method: 'GET', url: '/gw/supergrok/_token' });
+    const call = () =>
+      gw({
+        url: '/gw/supergrok/v1/chat/completions',
+        headers: { authorization: `Bearer ${pass}` },
+        payload: { model: 'grok-code', messages: [] },
+      });
+    const anon = await gw({ method: 'GET', url: '/gw/supergrok/_session' });
     expect(anon.statusCode).toBe(401);
-    expect(ask).not.toHaveBeenCalled();
 
     const { TermdRefused } = await import('../src/terminals/client.ts');
-    ask.mockRejectedValue(new TermdRefused('vault_locked', 'Unlock the vault first.'));
-    const locked = await gw({
-      method: 'GET',
-      url: '/gw/supergrok/_token',
-      headers: { authorization: `Bearer ${pass}` },
-    });
-    expect(locked.statusCode).toBe(409);
+    ask.mockRejectedValueOnce(new TermdRefused('vault_locked', 'Unlock the vault first.'));
+    const locked = await call();
+    expect(locked.statusCode).toBe(403);
     expect(locked.json().error.message).toMatch(/vault on agentbox is locked/);
 
-    await laptop.post(`/api/gateway/machines/${machine.id}/revoke`);
-    const stopped = await gw({
+    // Older setups asked for the xAI token itself: they are told to refresh instead.
+    const old = await gw({
       method: 'GET',
       url: '/gw/supergrok/_token',
       headers: { authorization: `Bearer ${pass}` },
     });
+    expect(old.statusCode).toBe(403);
+    expect(old.json().error.message).toMatch(/agentbox-machine refresh/);
+
+    ask.mockResolvedValue({ token: JWT, expiresAt: h.clock.now() + 3_600_000 });
+    expect((await call()).statusCode).toBe(200);
+    await laptop.post(`/api/gateway/machines/${machine.id}/revoke`);
+    const stopped = await call();
     expect(stopped.statusCode).toBe(403);
+    expect(stopped.json().error.message).toMatch(/stopped/);
+    expect(provider.seen).toHaveLength(1);
+  });
+
+  it('never sends the vault login to an address you typed', async () => {
+    await h.reauth(laptop);
+    const res = await laptop.post('/api/gateway/keys', {
+      preset: 'grok-login',
+      name: 'SuperGrok',
+      slug: 'supergrok',
+      secret: '',
+      upstream: 'https://attacker.example',
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().upstream).toBe('https://cli-chat-proxy.grok.com');
   });
 
   it('tells older setup scripts to skip it', async () => {

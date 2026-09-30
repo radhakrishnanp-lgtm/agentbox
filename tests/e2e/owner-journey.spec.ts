@@ -347,6 +347,33 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
       .sh(`"$HOME/.local/share/agentbox/bin/agentbox-machine" status`)
       .catch((err: unknown) => String((err as { stderr?: string }).stderr ?? err));
     expect(status).toContain('stopped');
+
+    // Start it again: the same pass works again.
+    await page.getByRole('button', { name: 'Start', exact: true }).click();
+    await expect(page.getByText('Active')).toBeVisible();
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
+      'Hello from the fake provider',
+    );
+
+    // Edit: rename it and take the second address away again.
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await page.getByLabel('Name', { exact: true }).fill('e2e-gpu-renamed');
+    await page.getByRole('textbox', { name: 'Allowed addresses' }).fill('127.0.0.1');
+    await shot(page, 'machine-edit');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.getByText('Saved “e2e-gpu-renamed”')).toBeVisible();
+    await expect(page.getByText(/Only from 127\.0\.0\.1, new ones need your OK/)).toBeVisible();
+    expect(await fromOther()).toContain('(127.0.0.2) is new for this machine');
+
+    // Stop, then delete: it is gone, and so is its pass.
+    await page.getByRole('button', { name: 'Stop', exact: true }).click();
+    await page.getByRole('button', { name: 'Stop machine' }).click();
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    await page.getByRole('button', { name: 'Delete machine' }).click();
+    await expect(page.getByText('No machines yet')).toBeVisible();
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
+      'no valid agentbox pass',
+    );
     await machine.sh(`"$HOME/.local/share/agentbox/bin/agentbox-machine" uninstall`);
     // Nothing of agentbox is left behind: no pass, no wrappers, no PATH line.
     expect(
@@ -389,7 +416,9 @@ ${machine.home}/.local/share:
   await page.goto('/activity');
   await expect(page.getByText('Terminal opened')).toBeVisible();
   await expect(page.getByText('Machine used for the first time')).toBeVisible();
-  await expect(page.getByText('Machine stopped')).toBeVisible();
+  await expect(page.getByText('Machine stopped')).toHaveCount(2); // stopped twice
+  await expect(page.getByText('Machine started again')).toBeVisible();
+  await expect(page.getByText('Machine deleted')).toBeVisible();
 
   expect(problems, 'console errors on device 1').toEqual([]);
   expect(phoneProblems, 'console errors on device 2').toEqual([]);

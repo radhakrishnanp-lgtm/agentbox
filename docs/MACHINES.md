@@ -44,10 +44,10 @@ Each wrapper finds the real CLI further down your PATH, sets the CLI's own addre
 
 ## Stopping a machine
 
-- **Web:** Machines → **Stop** (or **Stop all machines**). This needs no passkey, so you can do it fast from your phone.
+- **Web:** Machines → **Stop** (or **Stop all machines**). This needs no passkey, so you can do it fast from your phone. A stopped machine stays listed: **Start** gives the same pass its access back (after a passkey or authenticator-code check), **Edit** changes its name, keys, allowed addresses, limits and end date, and **Delete** removes it and its pass for good.
 - **SSH on the VPS:** `sudo agentbox machines stop <name>` or `sudo agentbox machines stop-all`.
 
-The pass stops working at once, and answers that are still streaming are cut within 2 seconds. Every CLI then stops with "agentbox: this machine was stopped in agentbox." (the official `grok` says "Not signed in" instead). Stopping a machine doesn't cancel your key at the provider. If you think a real key leaked, rotate it on the provider's website too.
+The pass stops working at once, and answers that are still streaming are cut within 2 seconds. Every CLI then stops with "agentbox: this machine was stopped in agentbox." (Grok too). Stopping a machine doesn't cancel your key at the provider. If you think a real key leaked, rotate it on the provider's website too.
 
 ## Lock to this computer
 
@@ -89,19 +89,18 @@ A machine can have one key per CLI. Other subscription logins (for example a Cha
 
 ## SuperGrok on other computers
 
-Your SuperGrok login lives only on agentbox. Other computers borrow short-lived tokens from it:
+Your SuperGrok login lives only on agentbox. Other computers use it through agentbox, the same way as an API key:
 
 1. In agentbox, open **Terminals**, unlock the vault, run `grok` and sign in with your SuperGrok account (once).
 2. In **Machines → AI keys**, add **SuperGrok login from your Terminals**. There is nothing to paste.
 3. Add a machine with that key and run its setup command on the other computer.
 4. Type `grok` there as usual.
 
-How it works: when `grok` on that computer needs a token, it asks agentbox with the machine's pass (`GET /gw/<slug>/_token`). agentbox reads the login from the vault and returns only the access token, which usually expires within an hour. The refresh token never leaves agentbox; when the token is nearly expired, agentbox lets the Grok CLI on the server refresh it the normal way.
+How it works: the wrapper points grok at agentbox (`GROK_CLI_CHAT_PROXY_BASE_URL=<agentbox>/gw/<slug>/v1`), and grok signs in with the machine's pass (its `auth_provider_command` calls `/gw/<slug>/_session`). Every Grok request then goes to agentbox, which checks the pass, the addresses and the limits, adds the SuperGrok token from the vault, and forwards it to xAI. The other computer never holds an xAI token, so **Stop cuts it off at once**, like any other key.
 
 - The vault must be unlocked, or the other computer gets "the vault on agentbox is locked".
-- Stopping the machine stops new tokens at once. A token it already has keeps working until it expires.
-- Unlike API keys, Grok talks to xAI directly with that token, so agentbox doesn't log each request, only when a token is handed out (**Activity** shows it at most once an hour per machine).
-- Tested with the official `grok` 1.0.44 against a stand-in for xAI (sign-in, requests and getting a new token near expiry). Not yet checked against the live Grok service.
+- Setups made before this change fetched the xAI token itself, which kept working after Stop until it expired. agentbox now refuses those; run `agentbox-machine refresh` on that computer (it also deletes the old token).
+- Tested with the official `grok` 1.0.44 against a stand-in for xAI. Not yet checked against the live Grok service.
 
 ## How each CLI is wired
 
