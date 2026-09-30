@@ -36,6 +36,13 @@
       "when": 1790696112300,
       "tag": "0004_signin_password",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1790745641745,
+      "tag": "0005_machine_address_approval",
+      "breakpoints": true
     }
   ]
 }

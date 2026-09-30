@@ -87,6 +87,28 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
       },
     );
 
+    /** Allowing a new address widens what the pass can do, so it needs a fresh check. */
+    app.post(
+      '/api/gateway/machines/:id/pending-ip',
+      {
+        schema: {
+          params: z.object({ id: z.uuid() }),
+          body: z.object({ ip: z.union([z.ipv4(), z.ipv6()]), allow: z.boolean() }),
+        },
+        preHandler: requireFreshAuth,
+      },
+      async (request) => {
+        const row = s.gateway.decidePendingIp(
+          request.params.id,
+          request.body.ip,
+          request.body.allow,
+          actor(request),
+          request.ip,
+        );
+        return s.gateway.machineSummary(row);
+      },
+    );
+
     app.post(
       '/api/gateway/machines/:id/revoke',
       { schema: { params: z.object({ id: z.uuid() }) }, preHandler: requireSession() },

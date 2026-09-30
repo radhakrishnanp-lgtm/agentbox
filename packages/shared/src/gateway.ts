@@ -192,27 +192,40 @@ export const aiKeyCreateSchema = z.object({
 });
 export type AiKeyCreate = z.infer<typeof aiKeyCreateSchema>;
 
-export const machineCreateSchema = z.object({
+const machineFields = {
   name: displayNameSchema(GATEWAY_LIMITS.machineNameMax),
   keyIds: z.array(z.uuid()).min(1, 'Pick at least one key').max(20),
-  ipRules: z.array(ipRuleSchema).max(GATEWAY_LIMITS.ipRulesMax).default([]),
-  rpm: z.number().int().min(1).max(GATEWAY_LIMITS.rpmMax).default(GATEWAY_LIMITS.rpmDefault),
+  ipRules: z.array(ipRuleSchema).max(GATEWAY_LIMITS.ipRulesMax),
+  rpm: z.number().int().min(1).max(GATEWAY_LIMITS.rpmMax),
   dailyTokenLimit: z.number().int().min(1000).max(GATEWAY_LIMITS.dailyTokensMax).nullable(),
-  lifetimeDays: z
-    .union([z.literal(7), z.literal(30), z.literal(90), z.literal(365), z.null()])
-    .default(GATEWAY_LIMITS.lifetimeDefaultDays),
+  /**
+   * Locks the pass to the first address that uses it. Any other address is
+   * refused until you allow it in agentbox, so a copied pass is useless elsewhere.
+   */
+  approveNewIps: z.boolean(),
+};
+const lifetimeSchema = z.union([
+  z.literal(7),
+  z.literal(30),
+  z.literal(90),
+  z.literal(365),
+  z.null(),
+]);
+
+export const machineCreateSchema = z.object({
+  ...machineFields,
+  ipRules: machineFields.ipRules.default([]),
+  rpm: machineFields.rpm.default(GATEWAY_LIMITS.rpmDefault),
+  approveNewIps: machineFields.approveNewIps.default(true),
+  lifetimeDays: lifetimeSchema.default(GATEWAY_LIMITS.lifetimeDefaultDays),
 });
 export type MachineCreate = z.input<typeof machineCreateSchema>;
 
-export const machineUpdateSchema = machineCreateSchema
-  .omit({ lifetimeDays: true })
-  .partial()
-  .extend({
-    /** Extends the pass from now by this many days (null = until revoked). */
-    renewDays: z
-      .union([z.literal(7), z.literal(30), z.literal(90), z.literal(365), z.null()])
-      .optional(),
-  });
+/** No defaults here: a field left out stays as it is (renewing must not clear the IP lock). */
+export const machineUpdateSchema = z.object(machineFields).partial().extend({
+  /** Extends the pass from now by this many days (null = until revoked). */
+  renewDays: lifetimeSchema.optional(),
+});
 export type MachineUpdate = z.input<typeof machineUpdateSchema>;
 
 export interface AiKeySummary {
@@ -245,6 +258,10 @@ export interface MachineSummary {
   lastSeenAt: string | null;
   lastIp: string | null;
   revokedAt: string | null;
+  approveNewIps: boolean;
+  /** The latest address that was refused and waits for you to allow it. */
+  pendingIp: string | null;
+  pendingIpAt: string | null;
   today: { requests: number; inputTokens: number; outputTokens: number };
 }
 

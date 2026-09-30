@@ -221,6 +221,9 @@ export class GatewayStore {
       lastSeenAt: m.lastSeenAt === null ? null : iso(m.lastSeenAt),
       lastIp: m.lastIp,
       revokedAt: m.revokedAt === null ? null : iso(m.revokedAt),
+      approveNewIps: m.approveNewIps,
+      pendingIp: m.pendingIp,
+      pendingIpAt: m.pendingIpAt === null ? null : iso(m.pendingIpAt),
       today,
     };
   }
@@ -248,6 +251,7 @@ export class GatewayStore {
       rpm: number;
       dailyTokenLimit: number | null;
       lifetimeDays: number | null;
+      approveNewIps: boolean;
     },
     actor: string,
     ip: string,
@@ -268,6 +272,9 @@ export class GatewayStore {
       lastSeenAt: null,
       lastIp: null,
       revokedAt: null,
+      approveNewIps: input.approveNewIps,
+      pendingIp: null,
+      pendingIpAt: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -282,6 +289,7 @@ export class GatewayStore {
         name: row.name,
         keys: row.keyIds.length,
         ipLocked: row.ipRules.length > 0,
+        approveNewIps: row.approveNewIps,
         rpm: row.rpm,
         dailyTokenLimit: row.dailyTokenLimit,
         expiresAt: row.expiresAt === null ? null : iso(row.expiresAt),
@@ -298,6 +306,7 @@ export class GatewayStore {
       ipRules?: string[] | undefined;
       rpm?: number | undefined;
       dailyTokenLimit?: number | null | undefined;
+      approveNewIps?: boolean | undefined;
       renewDays?: number | null | undefined;
     },
     actor: string,
@@ -313,6 +322,7 @@ export class GatewayStore {
     if (patch.ipRules !== undefined) set.ipRules = normaliseIpRules(patch.ipRules);
     if (patch.rpm !== undefined) set.rpm = patch.rpm;
     if (patch.dailyTokenLimit !== undefined) set.dailyTokenLimit = patch.dailyTokenLimit;
+    if (patch.approveNewIps !== undefined) set.approveNewIps = patch.approveNewIps;
     if (patch.renewDays !== undefined) {
       set.expiresAt = patch.renewDays === null ? null : now + patch.renewDays * DAY;
     }
@@ -386,6 +396,70 @@ export class GatewayStore {
     return !m || m.revokedAt !== null || (m.expiresAt !== null && m.expiresAt <= this.#clock.now());
   }
 
+  /** First use of a pass that locks itself: this address becomes the only one allowed. */
+  lockToFirstIp(m: MachineRow, ip: string): MachineRow {
+    const ipRules = [addressRule(ip)];
+    this.#db
+      .update(machine)
+      .set({ ipRules, updatedAt: this.#clock.now() })
+      .where(and(eq(machine.id, m.id), sql`${machine.ipRules} = '[]'`))
+      .run();
+    this.#audit.record({
+      actor: `machine:${m.id}`,
+      action: 'machine.ip_locked',
+      targetType: 'machine',
+      targetId: m.id,
+      ip,
+      details: { name: m.name, rule: ipRules[0] },
+    });
+    return { ...m, ipRules };
+  }
+
+  /** Remembers a refused address so the owner can allow it. */
+  markPendingIp(id: string, ip: string): void {
+    this.#db
+      .update(machine)
+      .set({ pendingIp: ip, pendingIpAt: this.#clock.now() })
+      .where(eq(machine.id, id))
+      .run();
+  }
+
+  /** Allows the waiting address (and its IPv6 /64 network), or just forgets it. */
+  decidePendingIp(id: string, ip: string, allow: boolean, actor: string, from: string): MachineRow {
+    const m = this.getMachine(id);
+    if (!m || m.revokedAt !== null) throw new AppError('not_found', 'That machine was not found.');
+    if (m.pendingIp !== ip) {
+      throw new AppError('conflict', 'That address is no longer waiting. Reload the page.');
+    }
+    const set: Partial<MachineRow> = {
+      pendingIp: null,
+      pendingIpAt: null,
+      updatedAt: this.#clock.now(),
+    };
+    if (allow) {
+      const rule = addressRule(ip);
+      if (m.ipRules.length >= GATEWAY_LIMITS.ipRulesMax) {
+        throw new AppError(
+          'bad_request',
+          `This machine already allows ${GATEWAY_LIMITS.ipRulesMax} addresses. Remove one first.`,
+        );
+      }
+      set.ipRules = normaliseIpRules([...m.ipRules, rule]);
+    }
+    this.#db.update(machine).set(set).where(eq(machine.id, id)).run();
+    this.#audit.record({
+      actor,
+      action: allow ? 'machine.ip_allowed' : 'machine.ip_ignored',
+      targetType: 'machine',
+      targetId: id,
+      ip: from,
+      details: { name: m.name, address: ip },
+    });
+    const row = this.getMachine(id);
+    if (!row) throw new AppError('not_found', 'That machine was not found.');
+    return row;
+  }
+
   markSeen(id: string, ip: string): void {
     this.#db
       .update(machine)
@@ -443,6 +517,25 @@ export class GatewayStore {
       .where(sql`${gatewayUsage.ts} < ${this.#clock.now() - 90 * DAY}`)
       .run();
   }
+}
+
+/**
+ * The rule that allows one address: exactly that IPv4 address, or the IPv6
+ * /64 network, because IPv6 devices change the last half of their address often.
+ */
+export function addressRule(ip: string): string {
+  // IPv4, including IPv4 written as IPv6 (::ffff:203.0.113.7): exactly that address.
+  if (!isIPv6(ip) || ip.includes('.')) return ip;
+  const groups = expandIPv6(ip).slice(0, 4);
+  return `${groups.map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
+
+function expandIPv6(ip: string): string[] {
+  const [head = '', tail] = ip.split('::');
+  const a = head ? head.split(':') : [];
+  const b = tail !== undefined && tail !== '' ? tail.split(':') : [];
+  const fill = tail === undefined ? [] : Array<string>(8 - a.length - b.length).fill('0');
+  return [...a, ...fill, ...b].map((g) => g.padStart(4, '0'));
 }
 
 export function normaliseIpRules(rules: string[]): string[] {

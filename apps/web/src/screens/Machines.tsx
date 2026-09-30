@@ -297,6 +297,12 @@ function MachineList({
   );
 }
 
+function addressLine(m: MachineSummary): string {
+  if (m.approveNewIps && m.ipRules.length === 0) return 'Locks to the first address that uses it';
+  const where = m.ipRules.length ? `Only from ${m.ipRules.join(', ')}` : 'From any address';
+  return m.approveNewIps ? `${where}, new ones need your OK` : where;
+}
+
 function MachineRow({
   machine: m,
   keys,
@@ -351,6 +357,23 @@ function MachineRow({
       });
   };
 
+  const decide = (allow: boolean) => {
+    if (!m.pendingIp) return;
+    const ip = m.pendingIp;
+    setBusy(true);
+    const send = () =>
+      post(`/api/gateway/machines/${encodeURIComponent(m.id)}/pending-ip`, { ip, allow });
+    (allow ? withFreshAuth(send, setSession) : send())
+      .then(() => {
+        toast.success(allow ? `“${m.name}” may now be used from ${ip}` : `${ip} stays blocked`);
+        onChange();
+      })
+      .catch((err: unknown) => toast.error(errorMessage(err)))
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
   return (
     <li className="flex flex-wrap items-start gap-3 px-5 py-4">
       <div className="min-w-0 flex-1 space-y-1">
@@ -369,7 +392,7 @@ function MachineRow({
           {m.dailyTokenLimit ? ` of ${m.dailyTokenLimit.toLocaleString()}` : ''}
         </p>
         <p className="text-sm text-muted">
-          {m.ipRules.length ? `Only from ${m.ipRules.join(', ')}` : 'From any address'}
+          {addressLine(m)}
           {` · ${m.rpm} requests a minute`}
           {m.revokedAt
             ? ` · stopped ${relativeTime(m.revokedAt)}`
@@ -377,6 +400,35 @@ function MachineRow({
               ? ` · pass valid until ${dateTime(m.expiresAt)}`
               : ' · pass valid until stopped'}
         </p>
+        {m.pendingIp && !m.revokedAt ? (
+          <Alert tone="warning" title={`Blocked a request from ${m.pendingIp}`} className="mt-2">
+            <p>
+              Someone used this machine's pass from a new address
+              {m.pendingIpAt ? ` ${relativeTime(m.pendingIpAt)}` : ''}. Allow it only if it's your
+              computer on a new network. If you don't know it, stop the machine.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                loading={busy}
+                onClick={() => {
+                  decide(true);
+                }}
+              >
+                Allow this address
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={busy}
+                onClick={() => {
+                  decide(false);
+                }}
+              >
+                Keep it blocked
+              </Button>
+            </div>
+          </Alert>
+        ) : null}
       </div>
       {m.revokedAt ? null : (
         <div className="flex gap-2">
@@ -425,6 +477,7 @@ function AddMachine({
   const [name, setName] = useState('');
   const [keyIds, setKeyIds] = useState<string[]>(keys.length === 1 && keys[0] ? [keys[0].id] : []);
   const [ips, setIps] = useState('');
+  const [approveNewIps, setApproveNewIps] = useState(true);
   const [lifetime, setLifetime] = useState(String(GATEWAY_LIMITS.lifetimeDefaultDays));
   const [rpm, setRpm] = useState(String(GATEWAY_LIMITS.rpmDefault));
   const [daily, setDaily] = useState('');
@@ -441,6 +494,7 @@ function AddMachine({
         .map((s) => s.trim())
         .filter(Boolean),
       rpm: Number(rpm),
+      approveNewIps,
       dailyTokenLimit: daily.trim() ? Number(daily.replace(/[,_\s]/g, '')) : null,
       lifetimeDays: lifetime === 'never' ? null : Number(lifetime),
     });
@@ -495,10 +549,31 @@ function AddMachine({
             </label>
           ))}
         </fieldset>
+        <label className="flex items-start gap-3 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-5 shrink-0"
+            checked={approveNewIps}
+            onChange={(e) => {
+              setApproveNewIps(e.target.checked);
+            }}
+          />
+          <span>
+            <span className="font-medium">Lock to this computer (recommended)</span>
+            <span className="block text-muted">
+              The pass works only from the address that uses it first. Any other address is blocked
+              until you allow it here, so a copied pass is useless on another computer.
+            </span>
+          </span>
+        </label>
         <Field
-          label="Only allow these addresses (optional, recommended)"
+          label="Also allow these addresses (optional)"
           placeholder="e.g. 203.0.113.7 or 203.0.113.0/24"
-          hint="The computer's public IP. Then a stolen pass is useless anywhere else. Leave empty for laptops that move around."
+          hint={
+            approveNewIps
+              ? 'Only if you know them already. Otherwise leave empty and the first address is used.'
+              : "The computer's public IP. Then a stolen pass is useless anywhere else. Leave empty for laptops that move around."
+          }
           value={ips}
           onChange={(e) => {
             setIps(e.target.value);
@@ -860,7 +935,8 @@ function HowItWorks() {
         <p>
           Someone with root on that computer can use your AI through the pass until you stop it.
           They can't read or copy your real keys, can't take over your accounts, and can't use the
-          pass from elsewhere if you set allowed addresses.
+          pass from another computer: with “Lock to this computer” on, a new address is blocked
+          until you allow it here.
         </p>
       </CardBody>
     </Card>
