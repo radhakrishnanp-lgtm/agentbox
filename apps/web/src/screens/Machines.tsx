@@ -2,13 +2,25 @@ import {
   GATEWAY_LIMITS,
   aiKeyCreateSchema,
   machineCreateSchema,
+  machineUpdateSchema,
   type AiKeySummary,
   type GatewayOverview,
   type MachineCreated,
   type MachineSummary,
   type ProviderPreset,
 } from '@agentbox/shared';
-import { Copy, KeyRound, Plus, Power, RefreshCw, Server, Terminal } from 'lucide-react';
+import {
+  Copy,
+  KeyRound,
+  Pencil,
+  Play,
+  Plus,
+  Power,
+  RefreshCw,
+  Server,
+  Terminal,
+  Trash2,
+} from 'lucide-react';
 import { useId, useState, type ReactNode, type SyntheticEvent } from 'react';
 import { toast } from 'sonner';
 import { PageHeader } from '../components/Layout.tsx';
@@ -241,7 +253,7 @@ function MachineList({
         }
       />
       {adding && data ? (
-        <AddMachine
+        <MachineForm
           keys={data.keys}
           onCancel={() => {
             setAdding(false);
@@ -314,6 +326,8 @@ function MachineRow({
 }) {
   const { setSession } = useAuth();
   const [confirming, setConfirming] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   // Read the clock once per mount; the list reloads after every change.
   const [now] = useState(() => Date.now());
@@ -329,6 +343,33 @@ function MachineRow({
       .then(() => {
         toast.success(`Stopped “${m.name}”`);
         setConfirming(false);
+        onChange();
+      })
+      .catch((err: unknown) => toast.error(errorMessage(err)))
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  const start = () => {
+    setBusy(true);
+    withFreshAuth(() => post(`/api/gateway/machines/${encodeURIComponent(m.id)}/start`), setSession)
+      .then(() => {
+        toast.success(`Started “${m.name}” again`);
+        onChange();
+      })
+      .catch((err: unknown) => toast.error(errorMessage(err)))
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  const remove = () => {
+    setBusy(true);
+    api(`/api/gateway/machines/${encodeURIComponent(m.id)}`, { method: 'DELETE' })
+      .then(() => {
+        toast.success(`Deleted “${m.name}”`);
+        setConfirmingDelete(false);
         onChange();
       })
       .catch((err: unknown) => toast.error(errorMessage(err)))
@@ -430,14 +471,39 @@ function MachineRow({
           </Alert>
         ) : null}
       </div>
-      {m.revokedAt ? null : (
-        <div className="flex gap-2">
-          {expiresSoon ? (
-            <Button variant="secondary" onClick={renew} loading={busy}>
-              <RefreshCw className="size-4" aria-hidden />
-              Renew
-            </Button>
-          ) : null}
+      <div className="flex flex-wrap gap-2">
+        {m.revokedAt ? (
+          <Button variant="secondary" onClick={start} loading={busy}>
+            <Play className="size-4" aria-hidden />
+            Start
+          </Button>
+        ) : expiresSoon ? (
+          <Button variant="secondary" onClick={renew} loading={busy}>
+            <RefreshCw className="size-4" aria-hidden />
+            Renew
+          </Button>
+        ) : null}
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setEditing((v) => !v);
+          }}
+        >
+          <Pencil className="size-4" aria-hidden />
+          Edit
+        </Button>
+        {m.revokedAt ? (
+          <Button
+            variant="secondary"
+            className="text-danger"
+            onClick={() => {
+              setConfirmingDelete(true);
+            }}
+          >
+            <Trash2 className="size-4" aria-hidden />
+            Delete
+          </Button>
+        ) : (
           <Button
             variant="secondary"
             className="text-danger"
@@ -448,13 +514,38 @@ function MachineRow({
             <Power className="size-4" aria-hidden />
             Stop
           </Button>
+        )}
+      </div>
+      {editing ? (
+        <div className="w-full">
+          <MachineForm
+            keys={keys}
+            machine={m}
+            onCancel={() => {
+              setEditing(false);
+            }}
+            onDone={() => {
+              setEditing(false);
+              onChange();
+            }}
+          />
         </div>
-      )}
+      ) : null}
+      <ConfirmDialog
+        open={confirmingDelete}
+        onOpenChange={setConfirmingDelete}
+        title={`Delete “${m.name}”?`}
+        description="Its pass stops working for good and its usage history is removed. To use this computer again, add it as a new machine."
+        confirmLabel="Delete machine"
+        tone="danger"
+        loading={busy}
+        onConfirm={remove}
+      />
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}
         title={`Stop “${m.name}”?`}
-        description="Its pass stops working now and any answer still streaming is cut off. To use this computer again, add it again."
+        description="Its pass stops working now and any answer still streaming is cut off. You can start it again later."
         confirmLabel="Stop machine"
         tone="danger"
         loading={busy}
@@ -464,29 +555,39 @@ function MachineRow({
   );
 }
 
-function AddMachine({
-  keys,
-  onDone,
-  onCancel,
-}: {
+type MachineFormProps = {
   keys: AiKeySummary[];
-  onDone: (c: MachineCreated) => void;
   onCancel: () => void;
-}) {
+} & (
+  | { machine?: undefined; onDone: (c: MachineCreated) => void }
+  | { machine: MachineSummary; onDone: (m: MachineSummary) => void }
+);
+
+/** Adds a machine, or edits one (name, keys, addresses, limits, pass lifetime). */
+function MachineForm(props: MachineFormProps) {
+  const { keys, onCancel, machine } = props;
+  const editing = machine !== undefined;
   const { setSession } = useAuth();
-  const [name, setName] = useState('');
-  const [keyIds, setKeyIds] = useState<string[]>(keys.length === 1 && keys[0] ? [keys[0].id] : []);
-  const [ips, setIps] = useState('');
-  const [approveNewIps, setApproveNewIps] = useState(true);
-  const [lifetime, setLifetime] = useState(String(GATEWAY_LIMITS.lifetimeDefaultDays));
-  const [rpm, setRpm] = useState(String(GATEWAY_LIMITS.rpmDefault));
-  const [daily, setDaily] = useState('');
+  const [name, setName] = useState(machine?.name ?? '');
+  const [keyIds, setKeyIds] = useState<string[]>(
+    machine ? machine.keyIds : keys.length === 1 && keys[0] ? [keys[0].id] : [],
+  );
+  const [ips, setIps] = useState(machine ? machine.ipRules.join(', ') : '');
+  const [approveNewIps, setApproveNewIps] = useState(machine ? machine.approveNewIps : true);
+  // When editing, "keep" leaves the pass's end date as it is.
+  const [lifetime, setLifetime] = useState(
+    editing ? 'keep' : String(GATEWAY_LIMITS.lifetimeDefaultDays),
+  );
+  const [rpm, setRpm] = useState(String(machine?.rpm ?? GATEWAY_LIMITS.rpmDefault));
+  const [daily, setDaily] = useState(
+    machine?.dailyTokenLimit ? String(machine.dailyTokenLimit) : '',
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const submit = (e: SyntheticEvent) => {
     e.preventDefault();
-    const parsed = machineCreateSchema.safeParse({
+    const fields = {
       name,
       keyIds,
       ipRules: ips
@@ -496,8 +597,14 @@ function AddMachine({
       rpm: Number(rpm),
       approveNewIps,
       dailyTokenLimit: daily.trim() ? Number(daily.replace(/[,_\s]/g, '')) : null,
-      lifetimeDays: lifetime === 'never' ? null : Number(lifetime),
-    });
+    };
+    const days = lifetime === 'never' ? null : Number(lifetime);
+    const parsed = editing
+      ? machineUpdateSchema.safeParse({
+          ...fields,
+          ...(lifetime === 'keep' ? {} : { renewDays: days }),
+        })
+      : machineCreateSchema.safeParse({ ...fields, lifetimeDays: days });
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       setError(issue ? `${issue.path.join('.') || 'form'}: ${issue.message}` : 'Check the form');
@@ -505,8 +612,25 @@ function AddMachine({
     }
     setBusy(true);
     setError(null);
-    withFreshAuth(() => post<MachineCreated>('/api/gateway/machines', parsed.data), setSession)
-      .then(onDone)
+    const done = props.machine
+      ? withFreshAuth(
+          () =>
+            api<MachineSummary>(`/api/gateway/machines/${encodeURIComponent(props.machine.id)}`, {
+              method: 'PATCH',
+              body: parsed.data,
+            }),
+          setSession,
+        ).then((m) => {
+          toast.success(`Saved “${m.name}”`);
+          props.onDone(m);
+        })
+      : withFreshAuth(
+          () => post<MachineCreated>('/api/gateway/machines', parsed.data),
+          setSession,
+        ).then((c) => {
+          props.onDone(c);
+        });
+    done
       .catch((err: unknown) => {
         setError(errorMessage(err));
       })
@@ -561,18 +685,24 @@ function AddMachine({
           <span>
             <span className="font-medium">Lock to this computer (recommended)</span>
             <span className="block text-muted">
-              The pass works only from the address that uses it first. Any other address is blocked
-              until you allow it here, so a copied pass is useless on another computer.
+              The pass works only from the allowed addresses. With an empty list, the first address
+              that uses it is added. Any other address is blocked until you allow it here, so a
+              copied pass is useless on another computer.
             </span>
           </span>
         </label>
         <Field
-          label="Also allow these addresses (optional)"
-          placeholder="e.g. 203.0.113.7 or 203.0.113.0/24"
+          label={editing ? 'Allowed addresses' : 'Also allow these addresses (optional)'}
+          placeholder="e.g. 203.0.113.7, 198.51.100.0/24"
           hint={
-            approveNewIps
-              ? 'Only if you know them already. Otherwise leave empty and the first address is used.'
-              : "The computer's public IP. Then a stolen pass is useless anywhere else. Leave empty for laptops that move around."
+            editing
+              ? 'One or more IPs or ranges, separated by commas. Only these work.' +
+                (approveNewIps
+                  ? ' New ones wait for your OK.'
+                  : ' Leave empty to allow any address.')
+              : approveNewIps
+                ? 'Only if you know them already. Otherwise leave empty and the first address is used.'
+                : "The computer's public IP. Then a stolen pass is useless anywhere else. Leave empty for laptops that move around."
           }
           value={ips}
           onChange={(e) => {
@@ -580,10 +710,21 @@ function AddMachine({
           }}
         />
         <div className="grid gap-4 sm:grid-cols-3">
-          <Select label="Pass works for" value={lifetime} onChange={setLifetime}>
+          <Select
+            label={editing ? 'Pass end date' : 'Pass works for'}
+            value={lifetime}
+            onChange={setLifetime}
+          >
+            {editing ? (
+              <option value="keep">
+                {machine.expiresAt
+                  ? `Keep (${dateTime(machine.expiresAt)})`
+                  : 'Keep (until I stop it)'}
+              </option>
+            ) : null}
             {GATEWAY_LIMITS.lifetimesDays.map((d) => (
               <option key={d} value={String(d)}>
-                {d} days
+                {editing ? `${d} days from now` : `${d} days`}
               </option>
             ))}
             <option value="never">Until I stop it</option>
@@ -613,7 +754,7 @@ function AddMachine({
         ) : null}
         <div className="flex gap-2">
           <Button type="submit" loading={busy}>
-            Create pass
+            {editing ? 'Save changes' : 'Create pass'}
           </Button>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
             Cancel

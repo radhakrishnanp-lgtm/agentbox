@@ -89,14 +89,14 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
     id: 'grok-login',
     label: 'SuperGrok login from your Terminals (Grok)',
-    upstream: 'https://auth.x.ai',
+    upstream: 'https://cli-chat-proxy.grok.com',
     auth: 'grok-login',
     cli: 'grok',
     slug: 'supergrok',
     help: 'Sign in to Grok once in a terminal on this server (run grok, or grok login). Nothing to paste here.',
     experimental: true,
     noSecret: true,
-    note: 'Machines get short-lived Grok tokens from the login in your vault, so the vault must be unlocked. The long-lived login never leaves this server. Stopping a machine stops new tokens; a token it already has keeps working until it expires, usually within an hour. Not yet checked against the live Grok service.',
+    note: "Grok on your other computers signs in with the machine's pass and sends every request through agentbox, which adds your SuperGrok login from the vault. The login never leaves this server, so Stop cuts a machine off at once. The vault must be unlocked. Not yet checked against the live Grok service.",
   },
   {
     id: 'moonshot',

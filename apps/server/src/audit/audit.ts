@@ -45,6 +45,8 @@ export type AuditAction =
   | 'machine.limit_hit'
   | 'machine.grok_token'
   | 'machine.ip_locked'
+  | 'machine.started'
+  | 'machine.deleted'
   | 'machine.ip_allowed'
   | 'machine.ip_ignored'
   | 'machine.bad_pass_lockout'

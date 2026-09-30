@@ -1,8 +1,8 @@
 /**
  * Owner API for the key gateway: AI keys and machines.
  * Adding keys, adding machines and widening what a machine may do need a
- * fresh passkey check. Stopping a machine never does: making things safer
- * should always be one tap.
+ * fresh check (passkey or authenticator code). Stopping or deleting a machine
+ * never does: making things safer should always be one tap.
  */
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -114,6 +114,27 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
       { schema: { params: z.object({ id: z.uuid() }) }, preHandler: requireSession() },
       async (request) => {
         s.gateway.revokeMachine(request.params.id, actor(request), request.ip);
+        s.relay.cut(request.params.id);
+        return { ok: true };
+      },
+    );
+
+    /** Starting a stopped machine gives its pass back its power, so it needs a fresh check. */
+    app.post(
+      '/api/gateway/machines/:id/start',
+      { schema: { params: z.object({ id: z.uuid() }) }, preHandler: requireFreshAuth },
+      async (request) => {
+        const row = s.gateway.startMachine(request.params.id, actor(request), request.ip);
+        return s.gateway.machineSummary(row);
+      },
+    );
+
+    /** Deleting only takes access away, so like Stop it needs no extra check. */
+    app.delete(
+      '/api/gateway/machines/:id',
+      { schema: { params: z.object({ id: z.uuid() }) }, preHandler: requireSession() },
+      async (request) => {
+        s.gateway.deleteMachine(request.params.id, actor(request), request.ip);
         s.relay.cut(request.params.id);
         return { ok: true };
       },

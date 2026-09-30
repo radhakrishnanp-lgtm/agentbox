@@ -182,7 +182,7 @@ describe('machine setup script', () => {
     expect(readFileSync(join(pc.home, '.profile'), 'utf8')).toBe('# existing profile\n');
   });
 
-  it('signs grok in with the SuperGrok login on agentbox, through a token helper', async () => {
+  it('sends grok through agentbox, signed in with the pass, never an xAI token', async () => {
     await h.app.listen({ host: '127.0.0.1', port: 0 });
     const address = h.app.server.address();
     if (!address || typeof address === 'string') throw new Error('no address');
@@ -200,12 +200,16 @@ describe('machine setup script', () => {
       dailyTokenLimit: null,
     });
     const { pass } = created.json<MachineCreated>();
-    vi.spyOn(h.services.terminals.client, 'request').mockResolvedValue({
+    const ask = vi.spyOn(h.services.terminals.client, 'request').mockResolvedValue({
       token: 'header.payload.signature-from-the-vault',
       expiresAt: Date.now() + 3_600_000,
     });
 
     const pc = computer();
+    // An older setup left a real xAI token here; setting up again removes it.
+    const loginDir = join(pc.home, '.local/share/agentbox/grok-login');
+    mkdirSync(loginDir, { recursive: true });
+    writeFileSync(join(loginDir, 'auth.json'), '{"old":"real xAI token"}');
     const script = join(dir, 'machine.sh');
     writeFileSync(script, renderMachineScript(base));
     const report = await pc.sh(`sh '${script}'`, { AGENTBOX_PASS: pass });
@@ -215,21 +219,24 @@ describe('machine setup script', () => {
     expect(grok.vars.get('GROK_HOME')).toBe(join(pc.home, '.local/share/agentbox/grok-login'));
     expect(grok.vars.has('XAI_API_KEY')).toBe(false);
     expect(grok.vars.has('GROK_AUTH_PATH')).toBe(false);
-    expect(grok.vars.has('GROK_CLI_CHAT_PROXY_BASE_URL')).toBe(false);
+    expect(grok.vars.get('GROK_CLI_CHAT_PROXY_BASE_URL')).toBe(`${base}/gw/supergrok/v1`);
     expect(grok.vars.get('GROK_TELEMETRY_ENABLED')).toBe('false');
     expect(grok.args).toEqual(['--flag']);
-    // The pass itself is never handed to grok.
+    const oldLogin = join(loginDir, 'auth.json');
+    expect(existsSync(oldLogin) ? readFileSync(oldLogin, 'utf8') : '').not.toContain('real xAI');
+    // The pass is not in grok's environment; grok gets it from the helper.
     expect([...grok.vars.values()].some((v) => v.includes(pass))).toBe(false);
 
     // grok runs its auth_provider_command through sh -c, the way this does.
     const command = grok.vars.get('GROK_AUTH_PROVIDER_COMMAND') ?? '';
     expect(command).toBe(`'${pc.bin}/.agentbox-grok-token'`);
     const out = JSON.parse(await pc.sh(command)) as Record<string, unknown>;
-    expect(out.access_token).toBe('header.payload.signature-from-the-vault');
+    expect(out.access_token).toBe(pass);
     expect(out.issuer).toBe('https://auth.x.ai');
-    expect(out.expires_in).toBeGreaterThan(3500);
+    expect(JSON.stringify(out)).not.toContain('signature-from-the-vault');
+    expect(ask).not.toHaveBeenCalled();
 
-    // A stopped machine gets no more tokens, and grok is told why.
+    // A stopped machine can't sign in again, and grok is told why.
     await laptop.post(`/api/gateway/machines/${created.json<MachineCreated>().machine.id}/revoke`);
     await expect(pc.sh(command)).rejects.toThrow(/this machine was stopped in agentbox/);
 

@@ -195,27 +195,29 @@ write_wrapper() {
   WIRED="$WIRED $cli"
 }
 
-# A "SuperGrok login" key: grok signs in with short-lived tokens that
-# agentbox mints from the Grok login in its vault. grok runs the helper
-# below (its auth_provider_command) whenever it needs a new token, then talks
-# to xAI directly. The long-lived login never comes to this computer.
+# A "SuperGrok login" key: grok signs in with this machine's pass (the helper
+# below is its auth_provider_command) and sends every request to agentbox,
+# which adds the SuperGrok login from its vault. No xAI token comes to this
+# computer, so stopping the machine in agentbox cuts grok off at once.
 write_grok_login() {
   url=$1
   model=$2
   helper="$BIN/.agentbox-grok-token"
+  # Older setups stored a real xAI token here; it would keep working after Stop.
+  rm -f "$DATA/grok-login/auth.json"
   tmp="$BIN/.grok-token.tmp"
   {
     say '#!/bin/sh'
-    say '# Written by agentbox: prints a short-lived Grok sign-in token from agentbox.'
+    say '# Written by agentbox: signs grok in with this machine'"'"'s agentbox pass (no xAI token here).'
     say "pass_file='$PASS_FILE'"
     say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
     say 'body=$(mktemp) || exit 1'
     say "code=\$(printf 'header = \"Authorization: Bearer %s\"\\n' \"\$(cat \"\$pass_file\")\" |"
-    say "  curl -sS --proto '$PROTO' -K - -o \"\$body\" -w '%{http_code}' '$url/_token') || code=000"
+    say "  curl -sS --proto '$PROTO' -K - -o \"\$body\" -w '%{http_code}' '$url/_session') || code=000"
     say 'if [ "$code" = 200 ]; then cat "$body"; rm -f "$body"; exit 0; fi'
     say "msg=\$(sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p' \"\$body\" | head -n 1)"
     say 'rm -f "$body"'
-    say 'echo "${msg:-agentbox: could not get a Grok token (HTTP $code).}" >&2'
+    say 'echo "${msg:-agentbox: could not sign grok in (HTTP $code).}" >&2'
     say 'exit 1'
   } >"$tmp"
   chmod 700 "$tmp"
@@ -232,6 +234,8 @@ write_grok_login() {
     say 'unset XAI_API_KEY GROK_API_KEY GROK_CODE_XAI_API_KEY GROK_XAI_API_BASE_URL GROK_BASE_URL GROK_CLI_CHAT_PROXY_BASE_URL GROK_AUTH GROK_AUTH_PATH GROK_OIDC_ISSUER GROK_OIDC_CLIENT_ID GROK_DEPLOYMENT_KEY GROK_MODEL'
     say "mkdir -p '$DATA/grok-login' && chmod 700 '$DATA/grok-login'"
     say "export GROK_HOME='$DATA/grok-login'"
+    # Every request goes to agentbox, which adds the SuperGrok login and can cut it off.
+    say "export GROK_CLI_CHAT_PROXY_BASE_URL='$url/v1'"
     say "export GROK_AUTH_PROVIDER_COMMAND=\"'$helper'\""
     say "export GROK_AUTH_PROVIDER_LABEL='agentbox'"
     say "export GROK_TELEMETRY_ENABLED='false' GROK_DISABLE_AUTOUPDATER='1'"

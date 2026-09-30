@@ -109,7 +109,11 @@ export class GatewayStore {
   addKey(input: AiKeyCreate, actor: string, ip: string): AiKeySummary {
     const preset = PROVIDER_PRESETS.find((p) => p.id === input.preset);
     if (!preset) throw new AppError('bad_request', 'Pick a provider from the list.');
-    const upstream = checkUpstream(input.upstream || preset.upstream, this.#config);
+    // A login key always goes to its provider: the vault's token must never go anywhere else.
+    const upstream = checkUpstream(
+      preset.noSecret ? preset.upstream : input.upstream || preset.upstream,
+      this.#config,
+    );
     const auth: KeyAuthStyle = input.auth ?? preset.auth;
     const cli: GatewayCli | null = input.cli === undefined ? preset.cli : input.cli;
     const model = input.model ?? null;
@@ -228,15 +232,9 @@ export class GatewayStore {
     };
   }
 
+  /** Every machine, stopped ones too, until you delete it. */
   listMachines(): MachineRow[] {
-    // Revoked machines stay listed for a week so you can see what happened.
-    const since = this.#clock.now() - 7 * DAY;
-    return this.#db
-      .select()
-      .from(machine)
-      .where(sql`${machine.revokedAt} IS NULL OR ${machine.revokedAt} >= ${since}`)
-      .orderBy(machine.createdAt)
-      .all();
+    return this.#db.select().from(machine).orderBy(machine.createdAt).all();
   }
 
   getMachine(id: string): MachineRow | undefined {
@@ -313,7 +311,7 @@ export class GatewayStore {
     ip: string,
   ): MachineRow {
     const m = this.getMachine(id);
-    if (!m || m.revokedAt !== null) throw new AppError('not_found', 'That machine was not found.');
+    if (!m) throw new AppError('not_found', 'That machine was not found.');
     if (patch.keyIds) this.#checkKeys(patch.keyIds);
     const now = this.#clock.now();
     const set: Partial<MachineRow> = { updatedAt: now };
@@ -357,6 +355,42 @@ export class GatewayStore {
       targetType: 'machine',
       targetId: id,
       ...(ip ? { ip } : {}),
+    });
+  }
+
+  /** Lets a stopped machine use its pass again (the same pass, the same limits). */
+  startMachine(id: string, actor: string, ip: string): MachineRow {
+    const now = this.#clock.now();
+    const res = this.#db
+      .update(machine)
+      .set({ revokedAt: null, updatedAt: now })
+      .where(and(eq(machine.id, id), sql`${machine.revokedAt} IS NOT NULL`))
+      .run();
+    if (res.changes === 0) throw new AppError('not_found', 'That machine is not stopped.');
+    this.#audit.record({
+      actor,
+      action: 'machine.started',
+      targetType: 'machine',
+      targetId: id,
+      ip,
+    });
+    const row = this.getMachine(id);
+    if (!row) throw new AppError('not_found', 'That machine was not found.');
+    return row;
+  }
+
+  /** Removes a machine and its usage history. Its pass stops working for good. */
+  deleteMachine(id: string, actor: string, ip: string): void {
+    const m = this.getMachine(id);
+    if (!m) throw new AppError('not_found', 'That machine was not found.');
+    this.#db.delete(machine).where(eq(machine.id, id)).run();
+    this.#audit.record({
+      actor,
+      action: 'machine.deleted',
+      targetType: 'machine',
+      targetId: id,
+      ip,
+      details: { name: m.name },
     });
   }
 
