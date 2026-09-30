@@ -96,6 +96,9 @@ export const newDeviceTotpSchema = z.object({
   deviceName: displayNameSchema(LIMITS.deviceNameMax),
 });
 
+/** Confirms it is you before a sensitive action, on computers without a passkey. */
+export const reauthCodeSchema = z.object({ code: totpCodeSchema });
+
 export const recoverySignInSchema = z.object({
   code: totpCodeSchema,
   recoveryCode: recoveryCodeSchema,

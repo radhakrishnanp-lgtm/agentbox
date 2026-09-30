@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client';
 import { Toaster } from 'sonner';
 import { App } from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+import { FreshAuthPrompt } from './components/FreshAuthPrompt.tsx';
 import { applyTheme, loadTheme } from './lib/theme.ts';
 import { AuthProvider } from './state/auth.tsx';
 
@@ -19,6 +20,7 @@ createRoot(root).render(
     <ErrorBoundary>
       <AuthProvider>
         <App />
+        <FreshAuthPrompt />
       </AuthProvider>
       <Toaster position="top-center" theme="system" richColors closeButton />
     </ErrorBoundary>

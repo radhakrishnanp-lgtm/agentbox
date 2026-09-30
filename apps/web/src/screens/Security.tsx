@@ -32,7 +32,7 @@ export function Security() {
     <>
       <PageHeader
         title="Security"
-        description="How you sign in. Changes here ask for your passkey first."
+        description="How you sign in. Changes here ask for your passkey (or authenticator code) first."
       />
       <div className="space-y-4">
         {overview.status === 'error' ? (
@@ -151,7 +151,7 @@ function SignInPassword({
         open={confirmingRemove}
         onOpenChange={setConfirmingRemove}
         title="Turn off password sign-in?"
-        description="Computers already signed in stay signed in. New ones will need a passkey. You'll confirm with a passkey first."
+        description="Computers already signed in stay signed in. New ones will need a passkey. You'll confirm it's you first."
         confirmLabel="Turn off"
         tone="danger"
         loading={busy}

@@ -78,6 +78,7 @@ export const post = <T>(path: string, body?: unknown) =>
 
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) return err.message;
+  if (err instanceof Error && err.name === 'FreshAuthCancelled') return err.message;
   if (err instanceof DOMException && err.name === 'NotAllowedError') {
     return 'The passkey request was cancelled or timed out.';
   }

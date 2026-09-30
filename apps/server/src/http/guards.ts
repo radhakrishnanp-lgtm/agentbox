@@ -13,11 +13,14 @@ export function guards(services: Services) {
       request.auth = services.sessions.authenticate(request, !opts.passive);
     };
 
-  /** Sensitive actions need a passkey check from the last 5 minutes. */
+  /** Sensitive actions need a passkey or authenticator-code check from the last 5 minutes. */
   const requireFreshAuth: preHandlerAsyncHookHandler = async (request) => {
     request.auth = services.sessions.authenticate(request, true);
     if (!services.sessions.isFresh(request.auth)) {
-      throw new AppError('fresh_auth_required', 'Confirm it is you with your passkey first.');
+      throw new AppError(
+        'fresh_auth_required',
+        'Confirm it is you with your passkey or authenticator code first.',
+      );
     }
   };
 
