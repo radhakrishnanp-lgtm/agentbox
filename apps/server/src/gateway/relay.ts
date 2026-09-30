@@ -14,6 +14,8 @@ import { Transform } from 'node:stream';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { request as upstreamRequest, Agent } from 'undici';
 import { passSchema } from '@agentbox/shared';
+import type { TermdGrokToken } from '@agentbox/shared/termd';
+import { TermdRefused } from '../terminals/client.ts';
 import { MINUTE, iso } from '../lib/clock.ts';
 import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
@@ -334,6 +336,78 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       s.gateway.markSeen(m.id, ip);
     };
 
+    /**
+     * A Grok login key has no provider to relay to: the machine's grok asks
+     * here for a short-lived access token (its auth_provider_command) and then
+     * talks to xAI itself. The refresh token never leaves termd.
+     */
+    const grokToken = async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+      m: MachineRow,
+      key: AiKeyRow,
+      path: string,
+      started: number,
+    ) => {
+      if (path !== '/_token' || request.method !== 'GET') {
+        return fail(
+          reply,
+          404,
+          'not_found_error',
+          `“${key.slug}” hands out Grok sign-in tokens only. Run grok through the agentbox command on this machine.`,
+        );
+      }
+      let status = 200;
+      try {
+        const t = await s.terminals.client.request<TermdGrokToken>({ op: 'grok.token' });
+        const now = s.clock.now();
+        if (state.shouldAudit(`${m.id}:grok-token`, now)) {
+          s.audit.record({
+            actor: `machine:${m.id}`,
+            action: 'machine.grok_token',
+            targetType: 'machine',
+            targetId: m.id,
+            ip: request.ip,
+            details: { name: m.name, key: key.slug, expiresAt: iso(t.expiresAt) },
+          });
+        }
+        reply.header('cache-control', 'no-store');
+        return await reply.send({
+          access_token: t.token,
+          expires_in: Math.max(0, Math.floor((t.expiresAt - now) / 1000)),
+          issuer: 'https://auth.x.ai',
+        });
+      } catch (err) {
+        const message =
+          err instanceof TermdRefused
+            ? err.code === 'vault_locked'
+              ? 'the vault on agentbox is locked. Unlock it in agentbox → Terminals.'
+              : err.message
+            : err instanceof AppError
+              ? err.message
+              : 'could not get a Grok token.';
+        status = err instanceof TermdRefused && err.code !== 'internal' ? 409 : 503;
+        return await fail(reply, status, 'api_error', message);
+      } finally {
+        s.gateway.recordUsage({
+          ts: started,
+          machineId: m.id,
+          keyId: key.id,
+          keySlug: key.slug,
+          method: request.method,
+          path,
+          model: null,
+          status,
+          durationMs: Math.max(0, s.clock.now() - started),
+          requestBytes: 0,
+          responseBytes: 0,
+          inputTokens: null,
+          outputTokens: null,
+        });
+        s.gateway.touchKey(key.id);
+      }
+    };
+
     // What the machine setup script needs: which CLIs to wire up, and where.
     app.get('/gw/_machine', { config: { rateLimit: false } }, async (request, reply) => {
       const m = authenticate(request, reply, undefined);
@@ -346,7 +420,14 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         // Tab-separated for the POSIX setup script, which has no JSON parser.
         const lines = [
           ['machine', expires, m.name],
-          ...keys.map((k) => ['key', k.slug, k.cli ?? '-', k.model ?? '-', k.name]),
+          // A login key's cli column is "grok-login": older scripts don't know it and skip it.
+          ...keys.map((k) => [
+            'key',
+            k.slug,
+            k.auth === 'grok-login' ? 'grok-login' : (k.cli ?? '-'),
+            k.model ?? '-',
+            k.name,
+          ]),
         ];
         return reply
           .type('text/plain; charset=utf-8')
@@ -448,6 +529,8 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         }
 
         seen(m, request.ip);
+
+        if (key.auth === 'grok-login') return grokToken(request, reply, m, key, path, started);
 
         const body = Buffer.isBuffer(request.body) ? request.body : undefined;
         const model = requestModel(body, path);

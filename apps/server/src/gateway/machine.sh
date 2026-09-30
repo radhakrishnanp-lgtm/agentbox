@@ -14,6 +14,7 @@
 #   ~/.config/agentbox/pass            the pass (only you can read it)
 #   ~/.local/share/agentbox/bin/       small wrappers named claude, codex, ...
 #   ~/.local/share/agentbox/<cli>/     own settings for codex, grok and gemini
+#                                      (grok-login when grok uses your SuperGrok login)
 # plus one PATH line in your shell start-up files, between agentbox markers.
 set -eu
 
@@ -194,6 +195,56 @@ write_wrapper() {
   WIRED="$WIRED $cli"
 }
 
+# A "SuperGrok login" key: grok signs in with short-lived tokens that
+# agentbox mints from the Grok login in its vault. grok runs the helper
+# below (its auth_provider_command) whenever it needs a new token, then talks
+# to xAI directly. The long-lived login never comes to this computer.
+write_grok_login() {
+  url=$1
+  model=$2
+  helper="$BIN/.agentbox-grok-token"
+  tmp="$BIN/.grok-token.tmp"
+  {
+    say '#!/bin/sh'
+    say '# Written by agentbox: prints a short-lived Grok sign-in token from agentbox.'
+    say "pass_file='$PASS_FILE'"
+    say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
+    say 'body=$(mktemp) || exit 1'
+    say "code=\$(printf 'header = \"Authorization: Bearer %s\"\\n' \"\$(cat \"\$pass_file\")\" |"
+    say "  curl -sS --proto '$PROTO' -K - -o \"\$body\" -w '%{http_code}' '$url/_token') || code=000"
+    say 'if [ "$code" = 200 ]; then cat "$body"; rm -f "$body"; exit 0; fi'
+    say "msg=\$(sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p' \"\$body\" | head -n 1)"
+    say 'rm -f "$body"'
+    say 'echo "${msg:-agentbox: could not get a Grok token (HTTP $code).}" >&2'
+    say 'exit 1'
+  } >"$tmp"
+  chmod 700 "$tmp"
+  mv -f "$tmp" "$helper"
+  tmp="$BIN/.grok.tmp"
+  {
+    say '#!/bin/sh'
+    say '# Written by agentbox: runs the real grok, signed in with your agentbox Grok login.'
+    say '# Remove with: agentbox-machine uninstall'
+    say "bin='$BIN'"
+    say 'path=$(printf "%s" "$PATH" | tr ":" "\n" | grep -vxF "$bin" | paste -s -d: -)'
+    say 'real=$(PATH="$path" command -v grok) || { echo "agentbox: grok is not installed on this machine yet." >&2; exit 127; }'
+    # Anything that would sign grok in some other way, or send it elsewhere.
+    say 'unset XAI_API_KEY GROK_API_KEY GROK_CODE_XAI_API_KEY GROK_XAI_API_BASE_URL GROK_BASE_URL GROK_CLI_CHAT_PROXY_BASE_URL GROK_AUTH GROK_AUTH_PATH GROK_OIDC_ISSUER GROK_OIDC_CLIENT_ID GROK_DEPLOYMENT_KEY GROK_MODEL'
+    say "mkdir -p '$DATA/grok-login' && chmod 700 '$DATA/grok-login'"
+    say "export GROK_HOME='$DATA/grok-login'"
+    say "export GROK_AUTH_PROVIDER_COMMAND=\"'$helper'\""
+    say "export GROK_AUTH_PROVIDER_LABEL='agentbox'"
+    say "export GROK_TELEMETRY_ENABLED='false' GROK_DISABLE_AUTOUPDATER='1'"
+    [ -z "$model" ] || say "export GROK_MODEL='$model'"
+    # The first time, sign grok in through the helper (grok -p doesn't do it by itself).
+    say "[ -s '$DATA/grok-login/auth.json' ] || \"\$real\" login </dev/null >/dev/null || exit 1"
+    say 'exec "$real" "$@"'
+  } >"$tmp"
+  chmod 700 "$tmp"
+  mv -f "$tmp" "$BIN/grok"
+  case " $WIRED " in *" grok "*) ;; *) WIRED="$WIRED grok" ;; esac
+}
+
 strip_block() {
   [ -f "$1" ] || return 0
   grep -qF "$MARK_BEGIN" "$1" || return 0
@@ -229,6 +280,7 @@ apply_setup() {
   MACHINE=''
   EXPIRES=''
   for cli in $CLIS; do rm -f "$BIN/$cli"; done
+  rm -f "$BIN/.agentbox-grok-token"
   while IFS="$TAB" read -r kind a b c d; do
     case "$kind" in
       machine)
@@ -240,12 +292,16 @@ apply_setup() {
         cli=$b
         model=$c
         printf '%s' "$slug" | grep -Eq '^[a-z][a-z0-9-]{1,30}$' || continue
-        case " $CLIS " in *" $cli "*) ;; *) continue ;; esac
+        case " $CLIS grok-login " in *" $cli "*) ;; *) continue ;; esac
         [ "$model" != - ] || model=''
         if [ -n "$model" ] && ! printf '%s' "$model" | grep -Eq '^[A-Za-z0-9._:/-]{1,100}$'; then
           continue
         fi
-        write_wrapper "$cli" "$AGENTBOX_URL/gw/$slug" "$model"
+        if [ "$cli" = grok-login ]; then
+          write_grok_login "$AGENTBOX_URL/gw/$slug" "$model"
+        else
+          write_wrapper "$cli" "$AGENTBOX_URL/gw/$slug" "$model"
+        fi
         ;;
     esac
   done <<EOF
@@ -331,7 +387,7 @@ case "$cmd" in
     ;;
   uninstall)
     for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile"; do strip_block "$rc"; done
-    rm -rf "$BIN" "$DATA/codex" "$DATA/grok" "$DATA/gemini" "$CONF"
+    rm -rf "$BIN" "$DATA/codex" "$DATA/grok" "$DATA/grok-login" "$DATA/gemini" "$CONF"
     rmdir "$DATA" 2>/dev/null || true
     say 'Removed agentbox from this computer. Also stop the machine in agentbox → Machines.'
     ;;

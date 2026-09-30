@@ -7,7 +7,21 @@ import { z } from 'zod';
 import { displayNameSchema } from './schemas.ts';
 
 /** How the real key is attached to the upstream request. */
-export type KeyAuthStyle = 'x-api-key' | 'bearer' | 'x-goog-api-key' | 'anthropic-oauth';
+export type KeyAuthStyle =
+  | 'x-api-key'
+  | 'bearer'
+  | 'x-goog-api-key'
+  | 'anthropic-oauth'
+  /** No stored key: the Grok login in the terminal vault hands out short-lived tokens. */
+  | 'grok-login';
+
+export const KEY_AUTH_STYLES = [
+  'x-api-key',
+  'bearer',
+  'x-goog-api-key',
+  'anthropic-oauth',
+  'grok-login',
+] as const satisfies readonly KeyAuthStyle[];
 
 /** The CLIs agentbox can wire up on a machine. */
 export const GATEWAY_CLIS = ['claude', 'codex', 'grok', 'kimi', 'gemini'] as const;
@@ -27,6 +41,10 @@ export interface ProviderPreset {
   experimental?: boolean;
   /** The CLI can't pick a model for this provider by itself, so the key must name one. */
   needsModel?: boolean;
+  /** Shown as a warning when the preset is picked. */
+  note?: string;
+  /** Nothing to paste: the login comes from somewhere else on agentbox. */
+  noSecret?: boolean;
 }
 
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
@@ -48,6 +66,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     slug: 'claude',
     help: 'Run `claude setup-token` on a trusted computer and paste the token. Starts with sk-ant-oat.',
     experimental: true,
+    note: "Claude Code accepts this token for headless use. Routing it through agentbox has not been checked against Anthropic's live service yet, and Anthropic may limit how subscription tokens are used. An Anthropic API key is the reliable option.",
   },
   {
     id: 'openai',
@@ -66,6 +85,18 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     cli: 'grok',
     slug: 'xai',
     help: 'console.x.ai → API keys. Starts with xai-.',
+  },
+  {
+    id: 'grok-login',
+    label: 'SuperGrok login from your Terminals (Grok)',
+    upstream: 'https://auth.x.ai',
+    auth: 'grok-login',
+    cli: 'grok',
+    slug: 'supergrok',
+    help: 'Sign in to Grok once in a terminal on this server (run grok, or grok login). Nothing to paste here.',
+    experimental: true,
+    noSecret: true,
+    note: 'Machines get short-lived Grok tokens from the login in your vault, so the vault must be unlocked. The long-lived login never leaves this server. Stopping a machine stops new tokens; a token it already has keeps working until it expires, usually within an hour. Not yet checked against the live Grok service.',
   },
   {
     id: 'moonshot',
@@ -145,10 +176,11 @@ export const aiKeyCreateSchema = z.object({
   preset: z.string().min(1).max(40),
   name: displayNameSchema(GATEWAY_LIMITS.keyNameMax),
   slug: slugSchema,
-  secret: z.string().trim().min(8, 'Paste the whole key').max(GATEWAY_LIMITS.secretMax),
+  /** Empty for presets with noSecret. */
+  secret: z.string().trim().max(GATEWAY_LIMITS.secretMax).default(''),
   /** Overrides the preset's address (required for "custom"). */
   upstream: z.string().trim().max(300).optional(),
-  auth: z.enum(['x-api-key', 'bearer', 'x-goog-api-key', 'anthropic-oauth']).optional(),
+  auth: z.enum(KEY_AUTH_STYLES).optional(),
   cli: z.enum(GATEWAY_CLIS).nullable().optional(),
   /** Default model for the machine's CLI, e.g. a Kimi model name. */
   model: z

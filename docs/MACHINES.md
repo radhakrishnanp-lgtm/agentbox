@@ -70,12 +70,29 @@ Every request is logged in agentbox (which key, model, tokens and status, never 
 | Claude Pro/Max token from `claude setup-token` | `claude`    | **Experimental.** Claude Code accepts it; relaying it has not been confirmed against Anthropic's live service, and Anthropic may limit how subscription tokens are used. |
 | OpenAI API key                                 | `codex`     |                                                                                                                                                                          |
 | xAI API key                                    | `grok`      | Works with both the official xAI `grok` and the open-source Grok CLI.                                                                                                    |
+| SuperGrok login from your Terminals            | `grok`      | **Experimental.** Nothing to paste: see [SuperGrok on other computers](#supergrok-on-other-computers). Official xAI `grok` only.                                         |
 | Moonshot API key                               | `kimi`      | Works with Kimi Code and the older kimi-cli. Needs a model name (for example `kimi-k2`) when you add the key.                                                            |
 | Moonshot API key, Claude-compatible address    | `claude`    | Runs Kimi models inside Claude Code. Needs a model name.                                                                                                                 |
 | Google Gemini API key                          | `gemini`    |                                                                                                                                                                          |
 | OpenRouter, or any HTTPS API                   | none        | Point any compatible tool at the key's gateway address, with the machine's pass as its API key.                                                                          |
 
-A machine can have one key per CLI. Subscription logins that can't use a custom address (for example SuperGrok or a ChatGPT login in Codex) don't work through the gateway. Use them in the browser terminal on the VPS instead (coming in Milestone 2).
+A machine can have one key per CLI. Other subscription logins (for example a ChatGPT login in Codex) don't work through the gateway yet. Use them in the browser terminal on the VPS instead.
+
+## SuperGrok on other computers
+
+Your SuperGrok login lives only on agentbox. Other computers borrow short-lived tokens from it:
+
+1. In agentbox, open **Terminals**, unlock the vault, run `grok` and sign in with your SuperGrok account (once).
+2. In **Machines → AI keys**, add **SuperGrok login from your Terminals**. There is nothing to paste.
+3. Add a machine with that key and run its setup command on the other computer.
+4. Type `grok` there as usual.
+
+How it works: when `grok` on that computer needs a token, it asks agentbox with the machine's pass (`GET /gw/<slug>/_token`). agentbox reads the login from the vault and returns only the access token, which usually expires within an hour. The refresh token never leaves agentbox; when the token is nearly expired, agentbox lets the Grok CLI on the server refresh it the normal way.
+
+- The vault must be unlocked, or the other computer gets "the vault on agentbox is locked".
+- Stopping the machine stops new tokens at once. A token it already has keeps working until it expires.
+- Unlike API keys, Grok talks to xAI directly with that token, so agentbox doesn't log each request, only when a token is handed out (**Activity** shows it at most once an hour per machine).
+- Tested with the official `grok` 1.0.44 against a stand-in for xAI (sign-in, requests and getting a new token near expiry). Not yet checked against the live Grok service.
 
 ## How each CLI is wired
 

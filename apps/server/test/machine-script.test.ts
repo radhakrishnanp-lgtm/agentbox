@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiKeySummary, MachineCreated } from '@agentbox/shared';
 import { renderMachineScript } from '../src/gateway/script.ts';
 import { Harness, type Browser } from './helpers/harness.ts';
@@ -180,6 +180,61 @@ describe('machine setup script', () => {
     expect(existsSync(join(pc.home, '.local/share/agentbox'))).toBe(false);
     expect(readdirSync(join(pc.home, '.config'))).toEqual([]);
     expect(readFileSync(join(pc.home, '.profile'), 'utf8')).toBe('# existing profile\n');
+  });
+
+  it('signs grok in with the SuperGrok login on agentbox, through a token helper', async () => {
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    const address = h.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('no address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const key = await addKey({
+      preset: 'grok-login',
+      name: 'SuperGrok',
+      slug: 'supergrok',
+      secret: '',
+    });
+    await h.reauth(laptop);
+    const created = await laptop.post('/api/gateway/machines', {
+      name: 'laptop-2',
+      keyIds: [key.id],
+      dailyTokenLimit: null,
+    });
+    const { pass } = created.json<MachineCreated>();
+    vi.spyOn(h.services.terminals.client, 'request').mockResolvedValue({
+      token: 'header.payload.signature-from-the-vault',
+      expiresAt: Date.now() + 3_600_000,
+    });
+
+    const pc = computer();
+    const script = join(dir, 'machine.sh');
+    writeFileSync(script, renderMachineScript(base));
+    const report = await pc.sh(`sh '${script}'`, { AGENTBOX_PASS: pass });
+    expect(report).toContain('These commands now use your agentbox keys: grok');
+    await pc.sh('grok --flag', { XAI_API_KEY: 'xai-stale-local', GROK_AUTH_PATH: '/tmp/stolen' });
+    const grok = pc.seen('grok');
+    expect(grok.vars.get('GROK_HOME')).toBe(join(pc.home, '.local/share/agentbox/grok-login'));
+    expect(grok.vars.has('XAI_API_KEY')).toBe(false);
+    expect(grok.vars.has('GROK_AUTH_PATH')).toBe(false);
+    expect(grok.vars.has('GROK_CLI_CHAT_PROXY_BASE_URL')).toBe(false);
+    expect(grok.vars.get('GROK_TELEMETRY_ENABLED')).toBe('false');
+    expect(grok.args).toEqual(['--flag']);
+    // The pass itself is never handed to grok.
+    expect([...grok.vars.values()].some((v) => v.includes(pass))).toBe(false);
+
+    // grok runs its auth_provider_command through sh -c, the way this does.
+    const command = grok.vars.get('GROK_AUTH_PROVIDER_COMMAND') ?? '';
+    expect(command).toBe(`'${pc.bin}/.agentbox-grok-token'`);
+    const out = JSON.parse(await pc.sh(command)) as Record<string, unknown>;
+    expect(out.access_token).toBe('header.payload.signature-from-the-vault');
+    expect(out.issuer).toBe('https://auth.x.ai');
+    expect(out.expires_in).toBeGreaterThan(3500);
+
+    // A stopped machine gets no more tokens, and grok is told why.
+    await laptop.post(`/api/gateway/machines/${created.json<MachineCreated>().machine.id}/revoke`);
+    await expect(pc.sh(command)).rejects.toThrow(/this machine was stopped in agentbox/);
+
+    await pc.sh('agentbox-machine uninstall');
+    expect(existsSync(join(pc.home, '.local/share/agentbox'))).toBe(false);
   });
 
   it('skips a Kimi key without a model, and a CLI it does not know', async () => {

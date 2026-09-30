@@ -643,7 +643,8 @@ function KeyRow({
           {preset?.experimental ? <Badge tone="warning">Experimental</Badge> : null}
         </p>
         <p className="text-sm text-muted">
-          {preset?.label ?? k.preset} · ends in ••••{k.hint}
+          {preset?.label ?? k.preset} ·{' '}
+          {preset?.noSecret ? 'uses the login in your vault' : `ends in ••••${k.hint}`}
           {k.cli ? ` · used by ${k.cli}` : ''}
           {k.model ? ` · model ${k.model}` : ''}
         </p>
@@ -718,7 +719,7 @@ function AddKey({
       preset: presetId,
       name,
       slug,
-      secret,
+      secret: preset?.noSecret ? '' : secret,
       upstream,
       model,
     });
@@ -753,24 +754,24 @@ function AddKey({
             </option>
           ))}
         </Select>
-        {preset?.experimental ? (
-          <Alert tone="warning" title="Experimental">
-            Claude Code accepts this token for headless use. Routing it through agentbox has not
-            been checked against Anthropic's live service yet, and Anthropic may limit how
-            subscription tokens are used. An Anthropic API key is the reliable option.
+        {preset?.note ? (
+          <Alert tone="warning" title={preset.experimental ? 'Experimental' : 'Good to know'}>
+            {preset.note}
           </Alert>
         ) : null}
-        <Field
-          label="Key"
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="Paste the key"
-          value={secret}
-          onChange={(e) => {
-            setSecret(e.target.value);
-          }}
-        />
+        {preset?.noSecret ? null : (
+          <Field
+            label="Key"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="Paste the key"
+            value={secret}
+            onChange={(e) => {
+              setSecret(e.target.value);
+            }}
+          />
+        )}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="Name"
@@ -804,18 +805,20 @@ function AddKey({
             }}
           />
         ) : null}
-        <Field
-          label="Provider address"
-          hint={
-            preset?.id === 'custom'
-              ? 'The API base address, starting with https://'
-              : 'Only change this if your provider told you to use a different address.'
-          }
-          value={upstream}
-          onChange={(e) => {
-            setUpstream(e.target.value);
-          }}
-        />
+        {preset?.noSecret ? null : (
+          <Field
+            label="Provider address"
+            hint={
+              preset?.id === 'custom'
+                ? 'The API base address, starting with https://'
+                : 'Only change this if your provider told you to use a different address.'
+            }
+            value={upstream}
+            onChange={(e) => {
+              setUpstream(e.target.value);
+            }}
+          />
+        )}
         {preset && preset.cli ? (
           <p className="text-sm text-muted">
             Machines get a {CLI_LABEL[preset.cli]} command that uses this key.

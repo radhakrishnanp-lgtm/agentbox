@@ -1,7 +1,7 @@
 import { connect } from 'node:net';
 import { request as httpRequest } from 'undici';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiKeySummary, MachineCreated } from '@agentbox/shared';
 import { aiKey, auditLog, machine as machineTable } from '../src/db/schema.ts';
 import { ANTHROPIC_OAUTH_BETA, cleanQuery, safePath } from '../src/gateway/relay.ts';
@@ -557,6 +557,106 @@ describe('who may use the relay', () => {
       .filter((a) => a.action.startsWith('machine.') && a.action !== 'machine.added');
     expect(events.map((e) => e.action)).toEqual(['machine.first_used', 'machine.ip_changed']);
     expect(JSON.parse(events[1]!.details)).toMatchObject({ previousIp: MACHINE_IP });
+  });
+});
+
+describe('SuperGrok login', () => {
+  const JWT = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString('base64url')}.sig`;
+
+  async function loginKey() {
+    return addKey({ preset: 'grok-login', name: 'SuperGrok', slug: 'supergrok', secret: '' });
+  }
+
+  it('needs nothing pasted, and never stores a secret for it', async () => {
+    const key = await loginKey();
+    expect(key.auth).toBe('grok-login');
+    expect(key.cli).toBe('grok');
+    expect(key.hint).toBe('VPS login');
+    await h.reauth(laptop);
+    const custom = await laptop.post('/api/gateway/keys', {
+      preset: 'custom',
+      name: 'x',
+      slug: 'x-login',
+      secret: 'something-long',
+      upstream: provider.url,
+      auth: 'grok-login',
+    });
+    expect(custom.statusCode).toBe(400);
+  });
+
+  it('hands a machine a short-lived token from the vault login, and nothing else', async () => {
+    const key = await loginKey();
+    const { pass } = await addMachine([key.id]);
+    const ask = vi
+      .spyOn(h.services.terminals.client, 'request')
+      .mockResolvedValue({ token: JWT, expiresAt: h.clock.now() + 3_600_000 });
+    const res = await gw({
+      method: 'GET',
+      url: '/gw/supergrok/_token',
+      headers: { authorization: `Bearer ${pass}` },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.json()).toEqual({
+      access_token: JWT,
+      expires_in: 3600,
+      issuer: 'https://auth.x.ai',
+    });
+    expect(ask).toHaveBeenCalledWith({ op: 'grok.token' });
+    // Not a relay: nothing is forwarded anywhere.
+    const chat = await gw({
+      url: '/gw/supergrok/v1/chat/completions',
+      headers: { authorization: `Bearer ${pass}` },
+      payload: {},
+    });
+    expect(chat.statusCode).toBe(404);
+    expect(provider.seen).toHaveLength(0);
+    const actions = h.services.audit.page(20).entries.map((e) => e.action);
+    expect(actions).toContain('machine.grok_token');
+  });
+
+  it('needs a valid pass, and says clearly when the vault is locked', async () => {
+    const key = await loginKey();
+    const { pass, machine } = await addMachine([key.id]);
+    const ask = vi.spyOn(h.services.terminals.client, 'request');
+    const anon = await gw({ method: 'GET', url: '/gw/supergrok/_token' });
+    expect(anon.statusCode).toBe(401);
+    expect(ask).not.toHaveBeenCalled();
+
+    const { TermdRefused } = await import('../src/terminals/client.ts');
+    ask.mockRejectedValue(new TermdRefused('vault_locked', 'Unlock the vault first.'));
+    const locked = await gw({
+      method: 'GET',
+      url: '/gw/supergrok/_token',
+      headers: { authorization: `Bearer ${pass}` },
+    });
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json().error.message).toMatch(/vault on agentbox is locked/);
+
+    await laptop.post(`/api/gateway/machines/${machine.id}/revoke`);
+    const stopped = await gw({
+      method: 'GET',
+      url: '/gw/supergrok/_token',
+      headers: { authorization: `Bearer ${pass}` },
+    });
+    expect(stopped.statusCode).toBe(403);
+  });
+
+  it('tells older setup scripts to skip it', async () => {
+    const key = await loginKey();
+    const { pass } = await addMachine([key.id]);
+    const text = await gw({
+      method: 'GET',
+      url: '/gw/_machine',
+      headers: { authorization: `Bearer ${pass}`, accept: 'text/plain' },
+    });
+    expect(text.body.trim().split('\n')[1]?.split('\t')).toEqual([
+      'key',
+      'supergrok',
+      'grok-login',
+      '-',
+      'SuperGrok',
+    ]);
   });
 });
 

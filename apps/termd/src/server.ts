@@ -18,6 +18,7 @@ import {
 } from '@agentbox/shared/termd';
 import type { TermdConfig } from './config.ts';
 import { TermdError, Tmux, checkName, clampSize } from './tmux.ts';
+import { GrokLogin } from './grok.ts';
 import { Vault, VaultError } from './vault.ts';
 
 /** Requests come from agentbox-web, but are still checked like any input. */
@@ -40,6 +41,7 @@ export class Termd {
   readonly config: TermdConfig;
   readonly tmux: Tmux;
   readonly vault: Vault;
+  readonly grok: GrokLogin;
   readonly #env: NodeJS.ProcessEnv;
   readonly #log: Log;
   readonly #attached = new Set<pty.IPty>();
@@ -52,6 +54,7 @@ export class Termd {
     this.#log = log;
     this.tmux = new Tmux(config, env);
     this.vault = vault ?? new Vault(config, env);
+    this.grok = new GrokLogin(config.home, env);
   }
 
   async listen(): Promise<void> {
@@ -180,6 +183,10 @@ export class Termd {
         case 'vault.lock':
           await this.lock();
           return { ok: true };
+        case 'grok.token': {
+          this.vault.assertUsable();
+          return { ok: true, ...(await this.grok.token()) };
+        }
         case 'vault.reset':
           this.vault.reset();
           this.#log('warn', 'vault reset');

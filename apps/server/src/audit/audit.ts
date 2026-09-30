@@ -43,6 +43,7 @@ export type AuditAction =
   | 'machine.ip_changed'
   | 'machine.blocked_ip'
   | 'machine.limit_hit'
+  | 'machine.grok_token'
   | 'machine.bad_pass_lockout'
   | 'terminal.created'
   | 'terminal.renamed'

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FrameDecoder, TERMD_FRAME, encodeFrame } from '@agentbox/shared/termd';
 import { loadTermdConfig, terminalEnv, type TermdConfig } from '../src/config.ts';
 import { Termd } from '../src/server.ts';
+import { GrokLogin, XAI_ISSUER, jwtExpiry, readGrokLogin } from '../src/grok.ts';
 import { explainMountFailure, mountPoints } from '../src/vault.ts';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -355,5 +356,69 @@ describe('vault mount errors', () => {
     expect(explainMountFailure('gocryptfs exit timeout', '')).toBe(
       'Could not unlock the vault (gocryptfs exit timeout).',
     );
+  });
+});
+
+describe('Grok login tokens for machines', () => {
+  const jwt = (expMs: number) =>
+    `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp: Math.floor(expMs / 1000) })).toString('base64url')}.signature-part`;
+  const record = (key: string, expMs: number) => ({
+    [`${XAI_ISSUER}::b1a00492-073a-47ea-816f-4c329264a828`]: {
+      key,
+      auth_mode: 'oidc',
+      create_time: new Date(0).toISOString(),
+      user_id: 'u1',
+      refresh_token: 'the-refresh-token-stays-here',
+      expires_at: new Date(expMs).toISOString(),
+      oidc_issuer: XAI_ISSUER,
+    },
+  });
+
+  it('reads the xAI login and ignores other issuers', () => {
+    const exp = Date.now() + 3_600_000;
+    const text = JSON.stringify({
+      ...record(jwt(exp), exp),
+      'https://acme.okta.com::x': {
+        key: jwt(exp + 1e7),
+        auth_mode: 'oidc',
+        oidc_issuer: 'https://acme.okta.com',
+      },
+    });
+    const got = readGrokLogin(text);
+    expect(got?.token).toBe(jwt(exp));
+    expect(Math.abs((got?.expiresAt ?? 0) - exp)).toBeLessThan(1000);
+    expect(readGrokLogin('not json')).toBeNull();
+    expect(readGrokLogin('{}')).toBeNull();
+    expect(jwtExpiry('not-a-jwt')).toBeNull();
+  });
+
+  it('refreshes through grok itself when the token is about to expire', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'termd-grok-'));
+    const bin = join(home, 'bin');
+    execFileSync('mkdir', ['-p', join(home, '.grok'), bin]);
+    const soon = Date.now() + 60_000;
+    writeFileSync(join(home, '.grok/auth.json'), JSON.stringify(record(jwt(soon), soon)));
+    const later = Date.now() + 3_600_000;
+    // A stand-in for `grok models`: it rewrites the login like the real CLI would.
+    writeFileSync(
+      join(bin, 'grok'),
+      `#!/bin/sh\n[ "$1" = models ] || exit 2\nprintf '%s' '${JSON.stringify(record(jwt(later), later))}' > "$HOME/.grok/auth.json"\n`,
+    );
+    execFileSync('chmod', ['755', join(bin, 'grok')]);
+    const login = new GrokLogin(home, { HOME: home, PATH: `${bin}:/usr/bin:/bin` });
+    const t = await login.token();
+    expect(t.token).toBe(jwt(later));
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('says what to do when Grok is not signed in, or the login is dead', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'termd-grok-'));
+    const login = new GrokLogin(home, { HOME: home, PATH: '/usr/bin:/bin' });
+    await expect(login.token()).rejects.toThrow(/not signed in/);
+    execFileSync('mkdir', ['-p', join(home, '.grok')]);
+    const past = Date.now() - 1000;
+    writeFileSync(join(home, '.grok/auth.json'), JSON.stringify(record(jwt(past), past)));
+    await expect(login.token()).rejects.toThrow(/run grok login/);
+    rmSync(home, { recursive: true, force: true });
   });
 });
