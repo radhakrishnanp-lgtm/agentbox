@@ -5,6 +5,7 @@ import {
   newDeviceTotpSchema,
   passkeyVerifySchema,
   passwordSignInSchema,
+  reauthCodeSchema,
   recoverySignInSchema,
   type AuthState,
   type SignInResult,
@@ -281,6 +282,35 @@ export function authRoutes(s: Services): FastifyPluginAsyncZod {
           targetId: auth.sessionId,
           ip: request.ip,
           details: { passkeyId },
+        });
+        return session;
+      },
+    );
+
+    /** The same check with an authenticator code, for computers without a passkey. */
+    app.post(
+      '/api/auth/reauth/code',
+      {
+        schema: { body: reauthCodeSchema },
+        preHandler: requireSession(),
+        config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+      },
+      async (request) => {
+        const auth = authOf(request);
+        s.lockouts.assertOpen('totp', POLICIES.totp);
+        if (!s.owner.consumeTotp(request.body.code)) {
+          failedLogin(request, 'totp');
+          throw invalidCredential();
+        }
+        s.lockouts.succeed('totp');
+        const session = await s.sessions.markFresh(request);
+        s.audit.record({
+          actor: `device:${auth.deviceId}`,
+          action: 'auth.reauth',
+          targetType: 'session',
+          targetId: auth.sessionId,
+          ip: request.ip,
+          details: { method: 'totp' },
         });
         return session;
       },

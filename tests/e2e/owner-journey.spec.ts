@@ -226,6 +226,42 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await shot(officePage, 'signin-password');
   await officePage.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(officePage.getByText('Signed in on E2E office PC.')).toBeVisible();
+
+  // A sensitive action here, when the passkey check can't be used: it asks for a code instead.
+  // (A string, because this file is type-checked without the browser's types.)
+  await officePage.evaluate(
+    "navigator.credentials.get = () => Promise.reject(new DOMException('No passkey here', 'NotAllowedError'))",
+  );
+  let staleOnce = true;
+  await officePage.route('**/api/security/password', async (route) => {
+    if (staleOnce && route.request().method() === 'PUT') {
+      staleOnce = false; // as if the last check were older than five minutes
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: { code: 'fresh_auth_required', message: 'Confirm it is you.' },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await officePage.getByRole('link', { name: 'Security' }).first().click();
+  await officePage.getByRole('button', { name: 'Change password' }).click();
+  await officePage.getByLabel('New password').fill(SIGNIN_PASSWORD);
+  await officePage.getByLabel('Type it again').fill(SIGNIN_PASSWORD);
+  await officePage.getByRole('button', { name: 'Save password' }).click();
+  const confirm = officePage.getByRole('alertdialog', { name: "Confirm it's you" });
+  await expect(confirm).toBeVisible();
+  await officePage.waitForTimeout(30_000 - (Date.now() % 30_000) + 500);
+  await confirm
+    .getByLabel('6-digit authenticator code')
+    .fill(totp.generate({ timestamp: Date.now() + 30_000 }));
+  await shot(officePage, 'confirm-with-code');
+  await confirm.getByRole('button', { name: 'Confirm' }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(officePage.getByRole('button', { name: 'Change password' })).toBeVisible();
   expect(officeProblems).toEqual([]);
   await office.close();
 
@@ -233,7 +269,7 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await page.goto('/activity');
   await expect(page.getByText('Setup completed')).toBeVisible();
   await expect(page.getByText('Device approved')).toHaveCount(2); // phone and office PC
-  await expect(page.getByText('Sign-in password set')).toBeVisible();
+  await expect(page.getByText('Sign-in password set').first()).toBeVisible();
   await page.getByRole('button', { name: 'Check integrity' }).click();
   await expect(page.getByText('Log is intact')).toBeVisible();
 

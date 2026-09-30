@@ -234,6 +234,26 @@ describe('fresh authentication for sensitive actions', () => {
     expect((await laptop.post('/api/security/passkeys/options')).statusCode).toBe(200);
   });
 
+  it('also accepts an authenticator code, once, for computers without a passkey', async () => {
+    h.clock.advance(6 * MIN);
+    await laptop.post('/api/auth/activity');
+    expect((await laptop.post('/api/security/passkeys/options')).statusCode).toBe(403);
+    const wrong = await laptop.post('/api/auth/reauth/code', { code: '000000' });
+    expect(wrong.statusCode).toBe(401);
+    expect((await laptop.post('/api/security/passkeys/options')).statusCode).toBe(403);
+    const code = h.totp();
+    const ok = await laptop.post('/api/auth/reauth/code', { code });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().freshAuthUntil).not.toBeNull();
+    expect((await laptop.post('/api/security/passkeys/options')).statusCode).toBe(200);
+    // A code works only once.
+    h.clock.advance(6 * MIN);
+    expect((await laptop.post('/api/auth/reauth/code', { code })).statusCode).toBe(401);
+    // Signed-out browsers can't use it.
+    const stranger = h.browser('198.51.100.40');
+    expect((await stranger.post('/api/auth/reauth/code', { code: h.totp() })).statusCode).toBe(401);
+  });
+
   it('adds a second passkey and refuses to remove the last one', async () => {
     const key2 = new VirtualAuthenticator(h.passkey.origin, h.passkey.rpId);
     const opts = (await laptop.post('/api/security/passkeys/options')).json();
