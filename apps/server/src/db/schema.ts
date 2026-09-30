@@ -268,6 +268,10 @@ export const machine = sqliteTable(
     lastSeenAt: integer('last_seen_at'),
     lastIp: text('last_ip'),
     revokedAt: integer('revoked_at'),
+    /** Lock to the first address; new addresses wait for the owner's OK. */
+    approveNewIps: integer('approve_new_ips', { mode: 'boolean' }).notNull().default(false),
+    pendingIp: text('pending_ip'),
+    pendingIpAt: integer('pending_ip_at'),
     ...timestamps,
   },
   (t) => [uniqueIndex('machine_pass_hash').on(t.passHash)],

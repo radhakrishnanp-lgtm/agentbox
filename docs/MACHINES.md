@@ -49,13 +49,22 @@ Each wrapper finds the real CLI further down your PATH, sets the CLI's own addre
 
 The pass stops working at once, and answers that are still streaming are cut within 2 seconds. Every CLI then stops with "agentbox: this machine was stopped in agentbox." (the official `grok` says "Not signed in" instead). Stopping a machine doesn't cancel your key at the provider. If you think a real key leaked, rotate it on the provider's website too.
 
+## Lock to this computer
+
+New machines have **Lock to this computer** on. The pass then works only from the address that uses it first (normally when you run the setup command). A request from any other address is refused with "this computer's address (…) is new for this machine", and the machine shows **Blocked a request from …** in agentbox:
+
+- **Allow this address** (after a passkey or authenticator-code check) adds it, for example when your laptop moves to a new network. For IPv6 the whole /64 network is allowed, because IPv6 devices change the end of their address often.
+- **Keep it blocked** just clears the notice. If you don't know the address, stop the machine.
+
+So a pass copied off the computer, even by someone with root, is useless anywhere else. On that same computer it keeps working until you stop the machine. The connection to agentbox is always HTTPS.
+
 ## What someone with root on that computer can and can't do
 
 | They can                                                                     | They can't                                                 |
 | ---------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Use your AI through that machine's pass until you stop it, within its limits | See or copy your real keys                                 |
 | Read what the CLIs on that computer send and receive                         | Take over your AI accounts                                 |
-|                                                                              | Use the pass from another address, if you set an IP lock   |
+|                                                                              | Use the pass from another computer (see below)             |
 |                                                                              | Keep access after you stop the machine or the pass expires |
 
 Every request is logged in agentbox (which key, model, tokens and status, never the content). The first use and any new address show up in **Activity**.

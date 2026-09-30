@@ -6,7 +6,7 @@ import type { AiKeySummary, MachineCreated } from '@agentbox/shared';
 import { aiKey, auditLog, machine as machineTable } from '../src/db/schema.ts';
 import { ANTHROPIC_OAUTH_BETA, cleanQuery, safePath } from '../src/gateway/relay.ts';
 import { renderMachineScript } from '../src/gateway/script.ts';
-import { ipAllowed } from '../src/gateway/store.ts';
+import { addressRule, ipAllowed } from '../src/gateway/store.ts';
 import { UsageMeter } from '../src/gateway/usage.ts';
 import { FakeProvider } from './helpers/fake-provider.ts';
 import { buildApp } from '../src/app.ts';
@@ -92,6 +92,17 @@ const messages = {
   max_tokens: 64,
   messages: [{ role: 'user', content: 'hi' }],
 };
+
+describe('address rules', () => {
+  it('allows exactly an IPv4 address, or an IPv6 /64 network', () => {
+    expect(addressRule('203.0.113.7')).toBe('203.0.113.7');
+    expect(addressRule('::ffff:203.0.113.7')).toBe('::ffff:203.0.113.7');
+    expect(addressRule('2001:db8:0:12:abcd::1')).toBe('2001:db8:0:12::/64');
+    expect(addressRule('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(ipAllowed('2001:db8:0:12:ffff::9', [addressRule('2001:db8:0:12:abcd::1')])).toBe(true);
+    expect(ipAllowed('2001:db8:0:13::1', [addressRule('2001:db8:0:12:abcd::1')])).toBe(false);
+  });
+});
 
 describe('AI keys', () => {
   it('stores the key encrypted and never shows it again', async () => {
@@ -449,7 +460,10 @@ describe('who may use the relay', () => {
 
   it('keeps an IP-locked pass to its addresses', async () => {
     const key = await addKey();
-    const { pass } = await addMachine([key.id], { ipRules: ['198.51.100.0/24'] });
+    const { pass } = await addMachine([key.id], {
+      ipRules: ['198.51.100.0/24'],
+      approveNewIps: false,
+    });
     const from = (ip: string) =>
       gw({
         url: '/gw/anthropic/v1/messages',
@@ -467,6 +481,81 @@ describe('who may use the relay', () => {
       .all()
       .map((a) => a.action);
     expect(actions).toContain('machine.blocked_ip');
+  });
+
+  it('locks a new pass to the first address, and new ones wait for your OK', async () => {
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id]);
+    expect(machine.approveNewIps).toBe(true);
+    const from = (ip: string) =>
+      gw({
+        url: '/gw/anthropic/v1/messages',
+        headers: { 'x-api-key': pass },
+        payload: messages,
+        ip,
+      });
+    expect((await from(MACHINE_IP)).statusCode).toBe(200);
+    // A copy of the pass on another computer is refused, and waits for you.
+    const stolen = await from('203.0.113.9');
+    expect(stolen.statusCode).toBe(403);
+    expect(stolen.json().error.message).toMatch(/203\.0\.113\.9\) is new for this machine/);
+    expect(provider.seen).toHaveLength(1);
+    const listed = () =>
+      laptop
+        .get('/api/gateway')
+        .then((r) => r.json<{ machines: MachineCreated['machine'][] }>().machines[0]);
+    const waiting = await listed();
+    expect(waiting?.ipRules).toEqual([MACHINE_IP]);
+    expect(waiting?.pendingIp).toBe('203.0.113.9');
+    expect((await from(MACHINE_IP)).statusCode).toBe(200);
+
+    // Allowing it needs a fresh check, and then it works.
+    const decide = (ip: string, allow: boolean) =>
+      laptop.post(`/api/gateway/machines/${machine.id}/pending-ip`, { ip, allow });
+    h.clock.advance(6 * 60_000);
+    expect((await decide('203.0.113.9', true)).statusCode).toBe(403);
+    await h.reauth(laptop);
+    expect((await decide('198.51.100.1', true)).statusCode).toBe(409); // not the waiting one
+    const allowed = await decide('203.0.113.9', true);
+    expect(allowed.statusCode, allowed.body).toBe(200);
+    expect(allowed.json().ipRules).toEqual([MACHINE_IP, '203.0.113.9']);
+    expect(allowed.json().pendingIp).toBeNull();
+    expect((await from('203.0.113.9')).statusCode).toBe(200);
+
+    // Keeping one blocked just clears the notice.
+    expect((await from('192.0.2.44')).statusCode).toBe(403);
+    const kept = await decide('192.0.2.44', false);
+    expect(kept.json().pendingIp).toBeNull();
+    expect(kept.json().ipRules).toHaveLength(2);
+    expect((await from('192.0.2.44')).statusCode).toBe(403);
+
+    const actions = h.services.db
+      .select()
+      .from(auditLog)
+      .all()
+      .map((a) => a.action);
+    expect(actions).toEqual(
+      expect.arrayContaining(['machine.ip_locked', 'machine.ip_allowed', 'machine.ip_ignored']),
+    );
+  });
+
+  it('keeps the address lock and limits when a pass is renewed', async () => {
+    const key = await addKey();
+    const { machine } = await addMachine([key.id], {
+      ipRules: ['198.51.100.0/24'],
+      rpm: 5,
+      approveNewIps: false,
+    });
+    await h.reauth(laptop);
+    const res = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { renewDays: 30 },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().ipRules).toEqual(['198.51.100.0/24']);
+    expect(res.json().rpm).toBe(5);
+    expect(res.json().approveNewIps).toBe(false);
   });
 
   it('only lets a machine use the keys it was given', async () => {
@@ -539,7 +628,7 @@ describe('who may use the relay', () => {
 
   it('records a new address as a security event', async () => {
     const key = await addKey();
-    const { pass } = await addMachine([key.id]);
+    const { pass } = await addMachine([key.id], { approveNewIps: false });
     const call = (ip: string) =>
       gw({
         url: '/gw/anthropic/v1/messages',

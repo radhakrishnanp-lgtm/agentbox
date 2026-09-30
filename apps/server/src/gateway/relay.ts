@@ -300,7 +300,10 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           `this machine's pass expired on ${iso(m.expiresAt)}. Renew it in agentbox → Machines.`,
         );
       }
+      // A pass that locks itself belongs to the first address that uses it.
+      if (m.approveNewIps && m.ipRules.length === 0) return s.gateway.lockToFirstIp(m, request.ip);
       if (!ipAllowed(request.ip, m.ipRules)) {
+        if (m.approveNewIps) s.gateway.markPendingIp(m.id, request.ip);
         if (state.shouldAudit(`${m.id}:ip:${request.ip}`, now)) {
           s.audit.record({
             actor: `machine:${m.id}`,
@@ -308,14 +311,16 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             targetType: 'machine',
             targetId: m.id,
             ip: request.ip,
-            details: { name: m.name },
+            details: { name: m.name, ...(m.approveNewIps ? { waitingForYou: true } : {}) },
           });
         }
         return fail(
           reply,
           403,
           'permission_error',
-          `this machine's pass is locked to other addresses (this one is ${request.ip}).`,
+          m.approveNewIps
+            ? `this computer's address (${request.ip}) is new for this machine. Allow it in agentbox → Machines, then try again.`
+            : `this machine's pass is locked to other addresses (this one is ${request.ip}).`,
         );
       }
       return m;
