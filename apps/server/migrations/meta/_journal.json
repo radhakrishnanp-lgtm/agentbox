@@ -43,6 +43,13 @@
       "when": 1790745641745,
       "tag": "0005_machine_address_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791134830964,
+      "tag": "0006_machine_address_labels",
+      "breakpoints": true
     }
   ]
 }

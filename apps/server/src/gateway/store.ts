@@ -218,6 +218,7 @@ export class GatewayStore {
       passPrefix: m.passPrefix,
       keyIds: m.keyIds,
       ipRules: m.ipRules,
+      ipLabels: m.ipLabels,
       rpm: m.rpm,
       dailyTokenLimit: m.dailyTokenLimit,
       createdAt: iso(m.createdAt),
@@ -246,6 +247,7 @@ export class GatewayStore {
       name: string;
       keyIds: string[];
       ipRules: string[];
+      ipLabels?: Record<string, string> | undefined;
       rpm: number;
       dailyTokenLimit: number | null;
       lifetimeDays: number | null;
@@ -257,13 +259,15 @@ export class GatewayStore {
     this.#checkKeys(input.keyIds);
     const pass = `${PASS_PREFIX}${randomToken()}`;
     const now = this.#clock.now();
+    const ipRules = normaliseIpRules(input.ipRules);
     const row: MachineRow = {
       id: newId(),
       name: input.name,
       passHash: hashToken(pass),
       passPrefix: pass.slice(0, PASS_PREFIX.length + 6),
       keyIds: [...new Set(input.keyIds)],
-      ipRules: normaliseIpRules(input.ipRules),
+      ipRules,
+      ipLabels: normaliseIpLabels(ipRules, input.ipLabels ?? {}),
       rpm: input.rpm,
       dailyTokenLimit: input.dailyTokenLimit,
       expiresAt: input.lifetimeDays === null ? null : now + input.lifetimeDays * DAY,
@@ -302,6 +306,7 @@ export class GatewayStore {
       name?: string | undefined;
       keyIds?: string[] | undefined;
       ipRules?: string[] | undefined;
+      ipLabels?: Record<string, string> | undefined;
       rpm?: number | undefined;
       dailyTokenLimit?: number | null | undefined;
       approveNewIps?: boolean | undefined;
@@ -318,6 +323,9 @@ export class GatewayStore {
     if (patch.name !== undefined) set.name = patch.name;
     if (patch.keyIds !== undefined) set.keyIds = [...new Set(patch.keyIds)];
     if (patch.ipRules !== undefined) set.ipRules = normaliseIpRules(patch.ipRules);
+    if (patch.ipRules !== undefined || patch.ipLabels !== undefined) {
+      set.ipLabels = normaliseIpLabels(set.ipRules ?? m.ipRules, patch.ipLabels ?? m.ipLabels);
+    }
     if (patch.rpm !== undefined) set.rpm = patch.rpm;
     if (patch.dailyTokenLimit !== undefined) set.dailyTokenLimit = patch.dailyTokenLimit;
     if (patch.approveNewIps !== undefined) set.approveNewIps = patch.approveNewIps;
@@ -433,9 +441,10 @@ export class GatewayStore {
   /** First use of a pass that locks itself: this address becomes the only one allowed. */
   lockToFirstIp(m: MachineRow, ip: string): MachineRow {
     const ipRules = [addressRule(ip)];
+    const ipLabels = { [addressRule(ip)]: 'First address used' };
     this.#db
       .update(machine)
-      .set({ ipRules, updatedAt: this.#clock.now() })
+      .set({ ipRules, ipLabels, updatedAt: this.#clock.now() })
       .where(and(eq(machine.id, m.id), sql`${machine.ipRules} = '[]'`))
       .run();
     this.#audit.record({
@@ -446,7 +455,7 @@ export class GatewayStore {
       ip,
       details: { name: m.name, rule: ipRules[0] },
     });
-    return { ...m, ipRules };
+    return { ...m, ipRules, ipLabels };
   }
 
   /** Remembers a refused address so the owner can allow it. */
@@ -479,6 +488,10 @@ export class GatewayStore {
         );
       }
       set.ipRules = normaliseIpRules([...m.ipRules, rule]);
+      set.ipLabels = normaliseIpLabels(set.ipRules, {
+        ...m.ipLabels,
+        [rule]: m.ipLabels[rule] ?? 'Allowed after it was blocked',
+      });
     }
     this.#db.update(machine).set(set).where(eq(machine.id, id)).run();
     this.#audit.record({
@@ -583,6 +596,20 @@ export function normaliseIpRules(rules: string[]): string[] {
       (isIPv4(addr) && (bits === undefined || (Number(bits) >= 0 && Number(bits) <= 32))) ||
       (isIPv6(addr) && (bits === undefined || (Number(bits) >= 0 && Number(bits) <= 128)));
     if (!ok) throw new AppError('bad_request', `“${r}” is not an IP address or range.`);
+  }
+  return out;
+}
+
+/** Keeps the notes for addresses that are in the list, trimmed, and drops empty ones. */
+export function normaliseIpLabels(
+  rules: string[],
+  labels: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [rule, label] of Object.entries(labels)) {
+    const key = rule.trim();
+    const text = label.trim().slice(0, GATEWAY_LIMITS.ipLabelMax);
+    if (text && rules.includes(key)) out[key] = text;
   }
   return out;
 }

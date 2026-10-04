@@ -295,6 +295,7 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   const pass = (await page.locator('code').filter({ hasText: /^abx_/ }).innerText()).trim();
   expect(pass).toMatch(/^abx_[A-Za-z0-9_-]{43}$/);
   await expect(page.getByText(`curl -fsSL ${E2E_ORIGIN}/machine.sh | sh`)).toBeVisible();
+  await expect(page.getByText(`irm ${E2E_ORIGIN}/machine.ps1 | iex`)).toBeVisible();
 
   const machine = makeMachine();
   try {
@@ -319,7 +320,13 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await page.reload();
     await expect(page.getByText('Active')).toBeVisible();
     await expect(page.getByText(/today 1 requests, 15 tokens/)).toBeVisible();
-    await expect(page.getByText(/Only from 127\.0\.0\.1, new ones need your OK/)).toBeVisible();
+    await expect(
+      page.getByText(/Only from 127\.0\.0\.1 \(First address used\), new ones need your OK/),
+    ).toBeVisible();
+    // The Windows setup script is served too.
+    expect(await machine.sh(`curl -fsS ${E2E_ORIGIN}/machine.ps1`)).toContain(
+      `$AgentboxUrl = '${E2E_ORIGIN}'`,
+    );
 
     // The same pass from another address (127.0.0.2 here) is refused until it's allowed.
     const fromOther = () =>
@@ -333,7 +340,11 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await expect(page.getByText('Blocked a request from 127.0.0.2')).toBeVisible();
     await shot(page, 'machine-new-address');
     await page.getByRole('button', { name: 'Allow this address' }).click();
-    await expect(page.getByText(/Only from 127\.0\.0\.1, 127\.0\.0\.2/)).toBeVisible();
+    await expect(
+      page.getByText(
+        /127\.0\.0\.1 \(First address used\), 127\.0\.0\.2 \(Allowed after it was blocked\)/,
+      ),
+    ).toBeVisible();
     expect(await fromOther()).toContain('Hello from the fake provider');
 
     // Stop it: the same command is refused at once.
@@ -355,14 +366,34 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
       'Hello from the fake provider',
     );
 
-    // Edit: rename it and take the second address away again.
+    // Edit: rename it, remove the second address, add a range with a note, and
+    // change the first address's note.
     await page.getByRole('button', { name: 'Edit', exact: true }).click();
     await page.getByLabel('Name', { exact: true }).fill('e2e-gpu-renamed');
-    await page.getByRole('textbox', { name: 'Allowed addresses' }).fill('127.0.0.1');
+    await page.getByRole('button', { name: 'Remove 127.0.0.2' }).click();
+    await page.getByLabel('IP address or range').fill('not an address');
+    await page.getByRole('button', { name: 'Add address' }).click();
+    await expect(page.getByText('“not an address” is not an IP address or range')).toBeVisible();
+    await page.getByLabel('IP address or range').fill('10.9.0.0/16');
+    await page.getByLabel('Note (optional)').fill('office');
+    await page.getByRole('button', { name: 'Add address' }).click();
+    await page.getByRole('button', { name: 'Edit 127.0.0.1' }).click();
+    await expect(page.getByLabel('Change address')).toHaveValue('127.0.0.1');
+    await page.getByLabel('Note (optional)').fill('this machine');
+    await page.getByLabel('Note (optional)').press('Enter');
+    const list = page.getByRole('list', { name: 'Allowed addresses' });
+    await expect(list.getByRole('listitem')).toHaveText([
+      '127.0.0.1 · this machine',
+      '10.9.0.0/16 · office',
+    ]);
     await shot(page, 'machine-edit');
     await page.getByRole('button', { name: 'Save changes' }).click();
     await expect(page.getByText('Saved “e2e-gpu-renamed”')).toBeVisible();
-    await expect(page.getByText(/Only from 127\.0\.0\.1, new ones need your OK/)).toBeVisible();
+    await expect(
+      page.getByText(
+        /Only from 127\.0\.0\.1 \(this machine\), 10\.9\.0\.0\/16 \(office\), new ones need your OK/,
+      ),
+    ).toBeVisible();
     expect(await fromOther()).toContain('(127.0.0.2) is new for this machine');
 
     // Stop, then delete: it is gone, and so is its pass.

@@ -1,6 +1,7 @@
 import {
   GATEWAY_LIMITS,
   aiKeyCreateSchema,
+  ipRuleSchema,
   machineCreateSchema,
   machineUpdateSchema,
   type AiKeySummary,
@@ -21,7 +22,7 @@ import {
   Terminal,
   Trash2,
 } from 'lucide-react';
-import { useId, useState, type ReactNode, type SyntheticEvent } from 'react';
+import { useId, useState, type KeyboardEvent, type ReactNode, type SyntheticEvent } from 'react';
 import { toast } from 'sonner';
 import { PageHeader } from '../components/Layout.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -169,18 +170,23 @@ function SetupSteps({ created, onClose }: { created: MachineCreated; onClose: ()
       <CardHeader
         icon={<Terminal className="size-5" aria-hidden />}
         title={`Set up “${created.machine.name}”`}
-        description="Do this on that computer, in its own terminal. No root needed."
+        description="Do this on that computer, in its own terminal. No root or administrator needed."
       />
       <CardBody className="space-y-4">
-        <CopyLine label="1. Run this" value={created.installCommand} />
+        <CopyLine label="1. On Linux or macOS, run this" value={created.installCommand} />
+        <CopyLine
+          label="Or on Windows, run this in PowerShell"
+          value={created.installCommandWindows}
+        />
         <CopyLine label="2. Paste this pass when it asks" value={created.pass} secret />
         <Alert tone="warning" title="This pass is shown only once">
           agentbox keeps only a fingerprint of it. If you lose it, stop this machine and add it
           again. Never paste the pass into chats or files other people can read.
         </Alert>
         <p className="text-sm text-muted">
-          After that, open a new terminal there and use claude, codex, grok, kimi or gemini as
-          usual. They use the keys on agentbox; the computer never gets them.
+          After that, open a new terminal there (PowerShell or Command Prompt on Windows) and use
+          claude, codex, grok, kimi or gemini as usual. They use the keys on agentbox; the computer
+          never gets them.
         </p>
         <Button variant="secondary" onClick={onClose}>
           Done
@@ -311,7 +317,12 @@ function MachineList({
 
 function addressLine(m: MachineSummary): string {
   if (m.approveNewIps && m.ipRules.length === 0) return 'Locks to the first address that uses it';
-  const where = m.ipRules.length ? `Only from ${m.ipRules.join(', ')}` : 'From any address';
+  const named = m.ipRules.map((r) => (m.ipLabels[r] ? `${r} (${m.ipLabels[r]})` : r));
+  const shown =
+    named.length > 3
+      ? `${named.slice(0, 3).join(', ')} and ${named.length - 3} more`
+      : named.join(', ');
+  const where = m.ipRules.length ? `Only from ${shown}` : 'From any address';
   return m.approveNewIps ? `${where}, new ones need your OK` : where;
 }
 
@@ -572,7 +583,7 @@ function MachineForm(props: MachineFormProps) {
   const [keyIds, setKeyIds] = useState<string[]>(
     machine ? machine.keyIds : keys.length === 1 && keys[0] ? [keys[0].id] : [],
   );
-  const [ips, setIps] = useState(machine ? machine.ipRules.join(', ') : '');
+  const addresses = useAddressList(machine);
   const [approveNewIps, setApproveNewIps] = useState(machine ? machine.approveNewIps : true);
   // When editing, "keep" leaves the pass's end date as it is.
   const [lifetime, setLifetime] = useState(
@@ -587,13 +598,14 @@ function MachineForm(props: MachineFormProps) {
 
   const submit = (e: SyntheticEvent) => {
     e.preventDefault();
+    // An address typed in but not added yet counts too.
+    const list = addresses.withDraft();
+    if (!list) return;
     const fields = {
       name,
       keyIds,
-      ipRules: ips
-        .split(/[\s,]+/)
-        .map((s) => s.trim())
-        .filter(Boolean),
+      ipRules: list.map((a) => a.rule),
+      ipLabels: Object.fromEntries(list.filter((a) => a.label).map((a) => [a.rule, a.label])),
       rpm: Number(rpm),
       approveNewIps,
       dailyTokenLimit: daily.trim() ? Number(daily.replace(/[,_\s]/g, '')) : null,
@@ -691,23 +703,20 @@ function MachineForm(props: MachineFormProps) {
             </span>
           </span>
         </label>
-        <Field
-          label={editing ? 'Allowed addresses' : 'Also allow these addresses (optional)'}
-          placeholder="e.g. 203.0.113.7, 198.51.100.0/24"
+        <AddressList
+          list={addresses}
+          title={editing ? 'Allowed addresses' : 'Also allow these addresses (optional)'}
           hint={
             editing
-              ? 'One or more IPs or ranges, separated by commas. Only these work.' +
+              ? 'Only these addresses work.' +
                 (approveNewIps
                   ? ' New ones wait for your OK.'
-                  : ' Leave empty to allow any address.')
+                  : ' With an empty list, any address works.')
               : approveNewIps
-                ? 'Only if you know them already. Otherwise leave empty and the first address is used.'
-                : "The computer's public IP. Then a stolen pass is useless anywhere else. Leave empty for laptops that move around."
+                ? 'Only if you know them already. Otherwise leave it empty and the first address is used.'
+                : "The computer's public IP. Then a stolen pass is useless anywhere else. Leave it empty for laptops that move around."
           }
-          value={ips}
-          onChange={(e) => {
-            setIps(e.target.value);
-          }}
+          lastIp={machine?.lastIp ?? null}
         />
         <div className="grid gap-4 sm:grid-cols-3">
           <Select
@@ -762,6 +771,211 @@ function MachineForm(props: MachineFormProps) {
         </div>
       </form>
     </CardBody>
+  );
+}
+
+interface Address {
+  rule: string;
+  label: string;
+}
+
+/** The allowed addresses being edited, plus the one typed into the add/edit fields. */
+function useAddressList(machine: MachineSummary | undefined) {
+  const [items, setItems] = useState<Address[]>(
+    machine ? machine.ipRules.map((rule) => ({ rule, label: machine.ipLabels[rule] ?? '' })) : [],
+  );
+  const [rule, setRule] = useState('');
+  const [label, setLabel] = useState('');
+  /** Index of the address being edited, or null when adding. */
+  const [editing, setEditing] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    setRule('');
+    setLabel('');
+    setEditing(null);
+    setError(null);
+  };
+
+  /** The list with the typed address put in, or null (with an error shown) if it isn't valid. */
+  const merged = (): Address[] | null => {
+    const r = rule.trim();
+    if (!r) return items;
+    if (!ipRuleSchema.safeParse(r).success) {
+      setError(`“${r}” is not an IP address or range, like 203.0.113.7 or 198.51.100.0/24.`);
+      return null;
+    }
+    if (items.some((a, i) => a.rule === r && i !== editing)) {
+      setError(`${r} is already in the list.`);
+      return null;
+    }
+    if (editing === null && items.length >= GATEWAY_LIMITS.ipRulesMax) {
+      setError(`Use at most ${GATEWAY_LIMITS.ipRulesMax} addresses. Remove one first.`);
+      return null;
+    }
+    const entry = { rule: r, label: label.trim() };
+    return editing === null ? [...items, entry] : items.map((a, i) => (i === editing ? entry : a));
+  };
+
+  return {
+    items,
+    rule,
+    label,
+    editing,
+    error,
+    setRule,
+    setLabel,
+    save: () => {
+      if (!rule.trim()) {
+        setError('Type an IP address or range first.');
+        return;
+      }
+      const next = merged();
+      if (!next) return;
+      setItems(next);
+      reset();
+    },
+    edit: (i: number) => {
+      const a = items[i];
+      if (!a) return;
+      setRule(a.rule);
+      setLabel(a.label);
+      setEditing(i);
+      setError(null);
+    },
+    remove: (i: number) => {
+      setItems(items.filter((_, j) => j !== i));
+      if (editing === i) reset();
+    },
+    cancel: reset,
+    withDraft: () => {
+      const next = merged();
+      if (next) {
+        setItems(next);
+        reset();
+      }
+      return next;
+    },
+  };
+}
+
+/** Add, edit and remove the addresses a machine's pass works from, each with an optional note. */
+function AddressList({
+  list,
+  title,
+  hint,
+  lastIp,
+}: {
+  list: ReturnType<typeof useAddressList>;
+  title: string;
+  hint: string;
+  lastIp: string | null;
+}) {
+  const id = useId();
+  const editing = list.editing !== null;
+  const onEnter = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      // Enter adds the address instead of saving the whole form.
+      e.preventDefault();
+      list.save();
+    }
+  };
+  const canAddLast = lastIp !== null && !list.items.some((a) => a.rule === lastIp);
+  return (
+    <fieldset className="space-y-2" aria-describedby={`${id}-hint`}>
+      <legend className="text-sm font-medium">{title}</legend>
+      <p id={`${id}-hint`} className="text-sm text-muted">
+        {hint}
+      </p>
+      {list.items.length ? (
+        <ul
+          aria-label={title}
+          className="divide-y divide-border rounded-[var(--radius-input)] border border-border bg-bg"
+        >
+          {list.items.map((a, i) => (
+            <li key={a.rule} className="flex items-center gap-2 py-1 pr-1 pl-3">
+              <span className="min-w-0 flex-1 text-sm">
+                <code className="font-mono break-all">{a.rule}</code>
+                {a.label ? <span className="text-muted"> · {a.label}</span> : null}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Edit ${a.rule}`}
+                disabled={list.editing === i}
+                onClick={() => {
+                  list.edit(i);
+                }}
+              >
+                <Pencil className="size-4" aria-hidden />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${a.rule}`}
+                onClick={() => {
+                  list.remove(i);
+                }}
+              >
+                <Trash2 className="size-4" aria-hidden />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <Field
+          label={editing ? 'Change address' : 'IP address or range'}
+          placeholder="e.g. 203.0.113.7 or 198.51.100.0/24"
+          autoComplete="off"
+          spellCheck={false}
+          value={list.rule}
+          error={list.error ?? undefined}
+          onKeyDown={onEnter}
+          onChange={(e) => {
+            list.setRule(e.target.value);
+          }}
+        />
+        <Field
+          label="Note (optional)"
+          placeholder="e.g. office, home"
+          maxLength={GATEWAY_LIMITS.ipLabelMax}
+          value={list.label}
+          onKeyDown={onEnter}
+          onChange={(e) => {
+            list.setLabel(e.target.value);
+          }}
+        />
+        <div className={cn('flex gap-2', list.error ? 'sm:mb-7' : '')}>
+          <Button variant="secondary" onClick={list.save}>
+            {editing ? (
+              'Save address'
+            ) : (
+              <>
+                <Plus className="size-4" aria-hidden />
+                Add address
+              </>
+            )}
+          </Button>
+          {editing ? (
+            <Button variant="ghost" onClick={list.cancel}>
+              Cancel
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {canAddLast && !editing ? (
+        <Button
+          variant="ghost"
+          onClick={() => {
+            list.setRule(lastIp);
+            list.setLabel('');
+          }}
+        >
+          Use the address it was last used from ({lastIp})
+        </Button>
+      ) : null}
+    </fieldset>
   );
 }
 

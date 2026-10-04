@@ -2,7 +2,7 @@ import { connect } from 'node:net';
 import { request as httpRequest } from 'undici';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AiKeySummary, MachineCreated } from '@agentbox/shared';
+import { GATEWAY_LIMITS, type AiKeySummary, type MachineCreated } from '@agentbox/shared';
 import { aiKey, auditLog, machine as machineTable } from '../src/db/schema.ts';
 import { ANTHROPIC_OAUTH_BETA, cleanQuery, safePath } from '../src/gateway/relay.ts';
 import { renderMachineScript } from '../src/gateway/script.ts';
@@ -162,6 +162,7 @@ describe('machines', () => {
     const created = await addMachine([key.id]);
     expect(created.pass).toMatch(/^abx_[A-Za-z0-9_-]{43}$/);
     expect(created.installCommand).toBe(`curl -fsSL ${ORIGIN}/machine.sh | sh`);
+    expect(created.installCommandWindows).toBe(`irm ${ORIGIN}/machine.ps1 | iex`);
     expect(created.machine.expiresAt).not.toBeNull();
 
     const overview = await laptop.get('/api/gateway');
@@ -212,6 +213,14 @@ describe('machines', () => {
     expect(res.body).toContain(`AGENTBOX_URL='${ORIGIN}'`);
     expect(res.body).not.toContain('@@');
     expect(() => renderMachineScript("https://x.example'; rm -rf ~")).toThrow();
+
+    const ps = await h.app.inject({ method: 'GET', url: '/machine.ps1' });
+    expect(ps.statusCode).toBe(200);
+    expect(ps.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(ps.body).toContain(`$AgentboxUrl = '${ORIGIN}'`);
+    expect(ps.body).not.toContain('@@');
+    // Windows PowerShell 5.1 reads a saved script in the local code page.
+    expect(Buffer.from(ps.body, 'utf8').every((b) => b < 128)).toBe(true);
   });
 });
 
@@ -519,6 +528,10 @@ describe('who may use the relay', () => {
     const allowed = await decide('203.0.113.9', true);
     expect(allowed.statusCode, allowed.body).toBe(200);
     expect(allowed.json().ipRules).toEqual([MACHINE_IP, '203.0.113.9']);
+    expect(allowed.json().ipLabels).toEqual({
+      [MACHINE_IP]: 'First address used',
+      '203.0.113.9': 'Allowed after it was blocked',
+    });
     expect(allowed.json().pendingIp).toBeNull();
     expect((await from('203.0.113.9')).statusCode).toBe(200);
 
@@ -601,6 +614,59 @@ describe('who may use the relay', () => {
     expect(res.json().ipRules).toEqual(['198.51.100.0/24']);
     expect(res.json().rpm).toBe(5);
     expect(res.json().approveNewIps).toBe(false);
+  });
+
+  it('keeps a list of allowed addresses with notes that you can add to, edit and remove', async () => {
+    const key = await addKey();
+    const { machine } = await addMachine([key.id], {
+      ipRules: ['198.51.100.0/24', '203.0.113.7'],
+      ipLabels: { '198.51.100.0/24': ' office ', '192.0.2.1': 'not in the list' },
+      approveNewIps: false,
+    });
+    expect(machine.ipLabels).toEqual({ '198.51.100.0/24': 'office' });
+    const patch = async (payload: Record<string, unknown>) => {
+      await h.reauth(laptop);
+      return laptop.request({
+        method: 'PATCH',
+        url: `/api/gateway/machines/${machine.id}`,
+        payload,
+      });
+    };
+
+    // Edit one address (and its note), remove one, add two.
+    const res = await patch({
+      ipRules: ['198.51.100.0/25', '2001:db8::/48', '192.0.2.10'],
+      ipLabels: {
+        '198.51.100.0/25': 'office, smaller',
+        '192.0.2.10': 'home',
+        '203.0.113.7': 'gone',
+      },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().ipRules).toEqual(['198.51.100.0/25', '2001:db8::/48', '192.0.2.10']);
+    expect(res.json().ipLabels).toEqual({
+      '198.51.100.0/25': 'office, smaller',
+      '192.0.2.10': 'home',
+    });
+
+    // Changing only the addresses keeps the notes of the ones that stay.
+    const fewer = await patch({ ipRules: ['192.0.2.10'] });
+    expect(fewer.json().ipLabels).toEqual({ '192.0.2.10': 'home' });
+    const renamed = await patch({ ipLabels: { '192.0.2.10': 'home router' } });
+    expect(renamed.json().ipRules).toEqual(['192.0.2.10']);
+    expect(renamed.json().ipLabels).toEqual({ '192.0.2.10': 'home router' });
+
+    // Up to 64 addresses; anything that isn't an address is refused.
+    const many = Array.from({ length: GATEWAY_LIMITS.ipRulesMax }, (_, i) => `10.0.${i}.1`);
+    expect((await patch({ ipRules: many })).statusCode).toBe(200);
+    expect((await patch({ ipRules: [...many, '10.1.0.1'] })).statusCode).toBe(400);
+    expect((await patch({ ipRules: ['not-an-ip'] })).statusCode).toBe(400);
+    expect((await patch({ ipLabels: { '10.0.0.1': 'x'.repeat(41) } })).statusCode).toBe(400);
+
+    // Removing them all opens the machine to any address again.
+    const open = await patch({ ipRules: [] });
+    expect(open.json().ipRules).toEqual([]);
+    expect(open.json().ipLabels).toEqual({});
   });
 
   it('only lets a machine use the keys it was given', async () => {

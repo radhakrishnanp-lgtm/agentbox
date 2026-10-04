@@ -15,6 +15,7 @@ import {
   type GatewayUsageRow,
   type MachineCreated,
 } from '@agentbox/shared';
+import { installCommands } from '../gateway/script.ts';
 import { authOf, guards } from '../http/guards.ts';
 import { iso } from '../lib/clock.ts';
 import type { Services } from '../services.ts';
@@ -65,7 +66,7 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
         return {
           machine: s.gateway.machineSummary(row),
           pass,
-          installCommand: `curl -fsSL ${s.config.origin}/machine.sh | sh`,
+          ...installCommands(s.config.origin),
         };
       },
     );

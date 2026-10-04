@@ -1,0 +1,1 @@
+ALTER TABLE `machine` ADD `ip_labels` text DEFAULT '{}' NOT NULL;
