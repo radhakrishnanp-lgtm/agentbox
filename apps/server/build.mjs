@@ -26,3 +26,4 @@ await build({
 });
 cpSync('migrations', 'dist/migrations', { recursive: true });
 cpSync('src/gateway/machine.sh', 'dist/machine.sh');
+cpSync('src/gateway/machine.ps1', 'dist/machine.ps1');

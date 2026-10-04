@@ -262,6 +262,11 @@ export const machine = sqliteTable(
     passPrefix: text('pass_prefix').notNull(),
     keyIds: text('key_ids', { mode: 'json' }).$type<string[]>().notNull(),
     ipRules: text('ip_rules', { mode: 'json' }).$type<string[]>().notNull(),
+    /** Notes for allowed addresses, by address. */
+    ipLabels: text('ip_labels', { mode: 'json' })
+      .$type<Record<string, string>>()
+      .notNull()
+      .default(sql`'{}'`),
     rpm: integer('rpm').notNull(),
     dailyTokenLimit: integer('daily_token_limit'),
     expiresAt: integer('expires_at'),

@@ -17,7 +17,8 @@ Open a terminal on the server from any browser, phone included. Sessions keep ru
 Add your AI keys to agentbox once, then run one command on a GPU server or laptop:
 
 ```sh
-curl -fsSL https://agent.example.com/machine.sh | sh
+curl -fsSL https://agent.example.com/machine.sh | sh      # Linux, macOS
+irm https://agent.example.com/machine.ps1 | iex          # Windows (PowerShell)
 ```
 
 After that, `claude`, `codex`, `grok`, `kimi` and `gemini` work there as usual, but the computer only holds an agentbox pass that you can stop from your phone. The real keys never leave the VPS. See [docs/MACHINES.md](docs/MACHINES.md).

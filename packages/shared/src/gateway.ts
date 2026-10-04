@@ -151,7 +151,8 @@ export const GATEWAY_LIMITS = {
   keyNameMax: 40,
   machineNameMax: 40,
   secretMax: 4096,
-  ipRulesMax: 16,
+  ipRulesMax: 64,
+  ipLabelMax: 40,
   rpmDefault: 60,
   rpmMax: 600,
   dailyTokensMax: 1_000_000_000,
@@ -170,7 +171,10 @@ export const slugSchema = z
   .toLowerCase()
   .regex(/^[a-z][a-z0-9-]{1,30}$/, 'Use 2–31 lowercase letters, digits or dashes');
 
-const ipRuleSchema = z.union([z.ipv4(), z.ipv6(), z.cidrv4(), z.cidrv6()]);
+/** One allowed address: an IPv4 or IPv6 address, or a range like 198.51.100.0/24. */
+export const ipRuleSchema = z.union([z.ipv4(), z.ipv6(), z.cidrv4(), z.cidrv6()]);
+/** An optional note for an allowed address, e.g. "office" or "home". */
+export const ipLabelSchema = z.string().trim().max(GATEWAY_LIMITS.ipLabelMax);
 
 export const aiKeyCreateSchema = z.object({
   preset: z.string().min(1).max(40),
@@ -196,6 +200,8 @@ const machineFields = {
   name: displayNameSchema(GATEWAY_LIMITS.machineNameMax),
   keyIds: z.array(z.uuid()).min(1, 'Pick at least one key').max(20),
   ipRules: z.array(ipRuleSchema).max(GATEWAY_LIMITS.ipRulesMax),
+  /** Notes for allowed addresses, by address. Notes for addresses not in the list are dropped. */
+  ipLabels: z.record(z.string().max(64), ipLabelSchema),
   rpm: z.number().int().min(1).max(GATEWAY_LIMITS.rpmMax),
   dailyTokenLimit: z.number().int().min(1000).max(GATEWAY_LIMITS.dailyTokensMax).nullable(),
   /**
@@ -215,6 +221,7 @@ const lifetimeSchema = z.union([
 export const machineCreateSchema = z.object({
   ...machineFields,
   ipRules: machineFields.ipRules.default([]),
+  ipLabels: machineFields.ipLabels.default({}),
   rpm: machineFields.rpm.default(GATEWAY_LIMITS.rpmDefault),
   approveNewIps: machineFields.approveNewIps.default(true),
   lifetimeDays: lifetimeSchema.default(GATEWAY_LIMITS.lifetimeDefaultDays),
@@ -251,6 +258,8 @@ export interface MachineSummary {
   passPrefix: string;
   keyIds: string[];
   ipRules: string[];
+  /** Notes for some of ipRules, by address. */
+  ipLabels: Record<string, string>;
   rpm: number;
   dailyTokenLimit: number | null;
   createdAt: string;
@@ -269,8 +278,10 @@ export interface MachineCreated {
   machine: MachineSummary;
   /** Shown once. agentbox keeps only its hash. */
   pass: string;
-  /** Paste on the machine; it asks for the pass. */
+  /** Paste on the machine; it asks for the pass. Linux and macOS. */
   installCommand: string;
+  /** The same for Windows, in PowerShell. */
+  installCommandWindows: string;
 }
 
 export interface GatewayOverview {
