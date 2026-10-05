@@ -280,6 +280,20 @@ describe('machine setup script', () => {
     );
     expect(found.trim()).toBe(join(pc.bin, 'claude'));
 
+    // Ubuntu's .profile reads .bashrc (which already has agentbox) and then puts
+    // ~/.local/bin, where Claude Code installs itself, in front. agentbox must
+    // still come first, and only once.
+    const own = join(pc.home, '.local/bin');
+    mkdirSync(own, { recursive: true });
+    writeFileSync(join(own, 'claude'), '#!/bin/sh\necho own claude\n', { mode: 0o755 });
+    const order = await pc.sh(
+      `PATH=/usr/bin:/bin; . "$HOME/.bash_profile"; PATH="$HOME/.local/bin:$PATH"; . "$HOME/.profile"; command -v claude; echo "$PATH"`,
+    );
+    const [which, path] = order.trim().split('\n');
+    expect(which).toBe(join(pc.bin, 'claude'));
+    expect(path?.split(':').filter((p) => p === pc.bin)).toHaveLength(1);
+    expect(path?.startsWith(`${pc.bin}:`)).toBe(true);
+
     await pc.sh('agentbox-machine uninstall');
     expect(readFileSync(join(pc.home, '.bash_profile'), 'utf8')).toBe('# conda etc\n');
   });

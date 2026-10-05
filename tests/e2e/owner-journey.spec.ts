@@ -411,6 +411,35 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await expect(page.getByRole('cell', { name: /127\.0\.0\.2/ }).first()).toBeVisible();
     await expect(page.getByRole('cell', { name: /claude-sonnet-4-5/ }).first()).toBeVisible();
     await shot(page, 'logs');
+
+    // Agent tracker: off until you turn it on, then it shows the prompt and the answer.
+    await page.getByRole('tab', { name: 'Agent tracker' }).click();
+    await expect(page.getByRole('heading', { name: 'Agent tracker is off' })).toBeVisible();
+    await page.getByRole('button', { name: 'Turn on' }).click();
+    await expect(page.getByRole('heading', { name: 'Agent tracker is on' })).toBeVisible();
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
+      'Hello from the fake provider',
+    );
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    const traced = page.getByRole('button', {
+      name: /e2e-gpu-renamed claude .* hi 1 prompt 1 answer/,
+    });
+    await expect(traced).toBeVisible();
+    await traced.click();
+    await expect(page.getByText('Hello from the fake provider').first()).toBeVisible();
+    await page.getByLabel('Note', { exact: true }).fill('first trace');
+    await page.getByRole('button', { name: 'Save note' }).click();
+    await expect(page.getByText('Note: first trace')).toBeVisible();
+    await shot(page, 'agent-tracker');
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export all' }).click();
+    expect((await download).suggestedFilename()).toMatch(/^agentbox-agent-tracker-.*\.csv$/);
+    await page.getByRole('button', { name: 'Delete all' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByText('Nothing saved yet')).toBeVisible();
+    await page.getByRole('button', { name: 'Turn off' }).click();
+    await expect(page.getByRole('heading', { name: 'Agent tracker is off' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Usage' }).click();
     await page
       .getByRole('navigation', { name: 'Main' })
       .first()

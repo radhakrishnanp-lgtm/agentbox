@@ -21,6 +21,7 @@ import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
 import { ipAllowed, type AiKeyRow, type MachineRow } from './store.ts';
+import { TraceCollector, isModelCall, requestSteps } from './trace.ts';
 import { requestModel, UsageMeter } from './usage.ts';
 
 export const GATEWAY_BODY_LIMIT = 32 * 1024 * 1024;
@@ -634,6 +635,11 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           secret = s.gateway.revealSecret(key);
         }
 
+        // Agent tracker (off unless you turn it on): what was asked and answered.
+        const trace =
+          s.tracker.enabled() && isModelCall(request.method, path) ? new TraceCollector() : null;
+        const answer: { type: string | undefined } = { type: undefined };
+
         const ctrl = new AbortController();
         const untrack = state.track(m.id, ctrl);
         let responseBytes = 0;
@@ -662,6 +668,25 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             ip: request.ip,
           });
           s.gateway.touchKey(key.id);
+          if (trace) {
+            try {
+              s.tracker.save({
+                ts: started,
+                machineId: m.id,
+                machineName: m.name,
+                keySlug: key.slug,
+                cli: key.cli,
+                model,
+                status,
+                durationMs: Math.max(0, s.clock.now() - started),
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+                steps: [...requestSteps(body), ...trace.finish(answer.type)],
+              });
+            } catch (err) {
+              request.log.warn({ err: (err as Error).message }, 'agent tracker could not save');
+            }
+          }
         };
         let answered = false;
         // The machine hung up: stop paying for an answer nobody will read.
@@ -699,6 +724,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         reply.header('cache-control', 'no-store');
         const contentType = upstream.headers['content-type'];
         const encoded = upstream.headers['content-encoding'];
+        answer.type = Array.isArray(contentType) ? contentType[0] : contentType;
         usageRef.meter =
           encoded && encoded !== 'identity'
             ? undefined
@@ -707,6 +733,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           transform(chunk: Buffer, _enc, cb) {
             responseBytes += chunk.length;
             usageRef.meter?.push(chunk);
+            if (!encoded || encoded === 'identity') trace?.push(chunk);
             cb(null, chunk);
           },
         });

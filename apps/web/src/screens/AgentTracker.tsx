@@ -1,0 +1,593 @@
+import type {
+  TraceEntry,
+  TracePage,
+  TraceStepType,
+  TraceSummary,
+  TrackerStatus,
+} from '@agentbox/shared';
+import { Download, Eye, EyeOff, Radar, RefreshCw, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { PageHeader } from '../components/Layout.tsx';
+import { Button } from '../components/ui/button.tsx';
+import { Card, CardBody, CardHeader } from '../components/ui/card.tsx';
+import { ConfirmDialog } from '../components/ui/dialog.tsx';
+import { Alert, Badge, EmptyState, Skeleton } from '../components/ui/feedback.tsx';
+import { api, errorMessage, post } from '../lib/api.ts';
+import { cn } from '../lib/cn.ts';
+import { dateTime, relativeTime } from '../lib/format.ts';
+import { FreshAuthCancelled, withFreshAuth } from '../lib/fresh-auth.ts';
+import { useAuth } from '../state/auth.tsx';
+
+/** While the tracker is on, new entries show up by themselves this often. */
+const LIVE_MS = 10_000;
+
+const STEP: Record<
+  TraceStepType,
+  { label: string; tone: 'info' | 'success' | 'warning' | 'danger' }
+> = {
+  prompt: { label: 'Prompt', tone: 'success' },
+  thinking: { label: 'Thinking', tone: 'info' },
+  answer: { label: 'Answer', tone: 'success' },
+  tool_call: { label: 'Tool', tone: 'warning' },
+  command: { label: 'Command', tone: 'danger' },
+  mcp: { label: 'MCP', tone: 'warning' },
+  tool_result: { label: 'Result', tone: 'info' },
+};
+
+const ORDER: TraceStepType[] = [
+  'prompt',
+  'command',
+  'mcp',
+  'tool_call',
+  'thinking',
+  'answer',
+  'tool_result',
+];
+
+function saveCsv(csv: string, name: string) {
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+type Pending = { kind: 'delete'; ids: string[] | 'all'; label: string } | null;
+
+export function AgentTracker({ tabs }: { tabs: ReactNode }) {
+  const { setSession } = useAuth();
+  const [status, setStatus] = useState<TrackerStatus | null>(null);
+  const [entries, setEntries] = useState<TraceSummary[] | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [open, setOpen] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [pending, setPending] = useState<Pending>(null);
+
+  const fetchFirst = useCallback(
+    () =>
+      Promise.all([
+        api<TrackerStatus>('/api/tracker'),
+        api<TracePage>('/api/tracker/entries?limit=50'),
+      ])
+        .then(([st, page]) => {
+          setStatus(st);
+          // Keep older pages you opened; put new entries on top.
+          setEntries((prev) => {
+            if (!prev) return page.entries;
+            const ids = new Set(page.entries.map((e) => e.id));
+            const older = prev.filter(
+              (e) =>
+                !ids.has(e.id) && page.entries.length > 0 && e.ts < (page.entries.at(-1)?.ts ?? ''),
+            );
+            return [...page.entries, ...older];
+          });
+          setNext((prev) => prev ?? page.nextBefore);
+          setError(null);
+        })
+        .catch((err: unknown) => {
+          setError(errorMessage(err));
+        }),
+    [],
+  );
+
+  useEffect(() => {
+    void fetchFirst();
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchFirst();
+    }, LIVE_MS);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [fetchFirst]);
+
+  const reload = () => {
+    setBusy('refresh');
+    setEntries(null);
+    setNext(null);
+    void fetchFirst().finally(() => {
+      setBusy(null);
+    });
+  };
+
+  const loadMore = () => {
+    if (!next) return;
+    setBusy('more');
+    api<TracePage>(`/api/tracker/entries?limit=50&before=${encodeURIComponent(next)}`)
+      .then((page) => {
+        setEntries((prev) => [...(prev ?? []), ...page.entries]);
+        setNext(page.nextBefore);
+      })
+      .catch((err: unknown) => {
+        setError(errorMessage(err));
+      })
+      .finally(() => {
+        setBusy(null);
+      });
+  };
+
+  const toggle = (on: boolean) => {
+    setBusy('toggle');
+    setNotice(null);
+    const send = () => api<TrackerStatus>('/api/tracker', { method: 'PUT', body: { enabled: on } });
+    (on ? withFreshAuth(send, setSession) : send())
+      .then((st) => {
+        setStatus(st);
+        setNotice(
+          on
+            ? 'The agent tracker is on. New requests from your computers show up below.'
+            : 'The agent tracker is off. Nothing new is saved; what was saved stays until you delete it.',
+        );
+      })
+      .catch((err: unknown) => {
+        if (!(err instanceof FreshAuthCancelled)) setError(errorMessage(err));
+      })
+      .finally(() => {
+        setBusy(null);
+      });
+  };
+
+  const exportCsv = (ids: string[] | 'all') => {
+    setBusy('export');
+    withFreshAuth(
+      () => post<{ csv: string; entries: number }>('/api/tracker/export', { ids }),
+      setSession,
+    )
+      .then(({ csv, entries: n }) => {
+        saveCsv(csv, `agentbox-agent-tracker-${new Date().toISOString().slice(0, 10)}.csv`);
+        setNotice(`Exported ${String(n)} ${n === 1 ? 'entry' : 'entries'}.`);
+      })
+      .catch((err: unknown) => {
+        if (!(err instanceof FreshAuthCancelled)) setError(errorMessage(err));
+      })
+      .finally(() => {
+        setBusy(null);
+      });
+  };
+
+  const remove = (ids: string[] | 'all') => {
+    setBusy('delete');
+    post<{ deleted: number }>('/api/tracker/delete', { ids })
+      .then(({ deleted }) => {
+        setNotice(`Deleted ${String(deleted)} ${deleted === 1 ? 'entry' : 'entries'}.`);
+        setSelected(new Set());
+        setPending(null);
+        setOpen(null);
+        setEntries((prev) =>
+          ids === 'all' ? [] : (prev ?? []).filter((e) => !ids.includes(e.id)),
+        );
+        if (ids === 'all') setNext(null);
+        void fetchFirst();
+      })
+      .catch((err: unknown) => {
+        setError(errorMessage(err));
+      })
+      .finally(() => {
+        setBusy(null);
+      });
+  };
+
+  const list = entries ?? [];
+  const allSelected = list.length > 0 && list.every((e) => selected.has(e.id));
+  const selectedIds = [...selected];
+
+  return (
+    <>
+      <PageHeader
+        title="Logs"
+        description="The agent tracker shows what the AI agents on your computers do: your prompts, their thinking, the tools, commands and MCP calls they use, and their answers."
+        action={
+          <Button variant="secondary" onClick={reload} loading={busy === 'refresh'}>
+            <RefreshCw className="size-4" aria-hidden />
+            Refresh
+          </Button>
+        }
+      />
+      {tabs}
+
+      <Card className="mb-4">
+        <CardHeader
+          icon={<Radar className="size-5" aria-hidden />}
+          title={status?.enabled ? 'Agent tracker is on' : 'Agent tracker is off'}
+          description={
+            status?.enabled
+              ? 'Every request from your computers is saved here, encrypted, until you delete it.'
+              : 'Nothing is saved. Turn it on when you want to see what an agent is doing.'
+          }
+          action={
+            status ? (
+              status.enabled ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    toggle(false);
+                  }}
+                  loading={busy === 'toggle'}
+                >
+                  <EyeOff className="size-4" aria-hidden />
+                  Turn off
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => {
+                    toggle(true);
+                  }}
+                  loading={busy === 'toggle'}
+                >
+                  <Eye className="size-4" aria-hidden />
+                  Turn on
+                </Button>
+              )
+            ) : null
+          }
+        />
+        <CardBody className="space-y-1 text-sm text-muted">
+          <p>
+            It reads what passes through agentbox, so it works for claude, codex, grok, kimi and
+            gemini on every computer. Turning it on and exporting ask for your passkey or
+            authenticator code.
+          </p>
+          <p>
+            {status ? `${status.entries.toLocaleString()} saved` : '…'} · keeps the newest{' '}
+            {(status?.maxEntries ?? 20000).toLocaleString()}. Turning it off keeps what was saved.
+          </p>
+        </CardBody>
+      </Card>
+
+      {error ? (
+        <Alert tone="danger" className="mb-4">
+          {error}
+        </Alert>
+      ) : null}
+      {notice ? (
+        <Alert tone="success" className="mb-4">
+          {notice}
+        </Alert>
+      ) : null}
+
+      <Card>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+          <label className="mr-2 flex min-h-11 items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="size-4 accent-[var(--accent)]"
+              checked={allSelected}
+              disabled={list.length === 0}
+              onChange={(e) => {
+                setSelected(e.target.checked ? new Set(list.map((x) => x.id)) : new Set());
+              }}
+            />
+            Select all
+          </label>
+          <Button
+            variant="secondary"
+            disabled={selected.size === 0}
+            loading={busy === 'export' && selected.size > 0}
+            onClick={() => {
+              exportCsv(selectedIds);
+            }}
+          >
+            <Download className="size-4" aria-hidden />
+            Export selected ({selected.size})
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={selected.size === 0}
+            onClick={() => {
+              setPending({
+                kind: 'delete',
+                ids: selectedIds,
+                label: `${String(selected.size)} selected ${selected.size === 1 ? 'entry' : 'entries'}`,
+              });
+            }}
+          >
+            <Trash2 className="size-4" aria-hidden />
+            Delete selected
+          </Button>
+          <span className="ml-auto flex flex-wrap gap-2">
+            <Button
+              variant="ghost"
+              disabled={!status?.entries}
+              loading={busy === 'export' && selected.size === 0}
+              onClick={() => {
+                exportCsv('all');
+              }}
+            >
+              <Download className="size-4" aria-hidden />
+              Export all
+            </Button>
+            <Button
+              variant="ghost"
+              className="text-danger"
+              disabled={!status?.entries}
+              onClick={() => {
+                setPending({ kind: 'delete', ids: 'all', label: 'every saved entry' });
+              }}
+            >
+              <Trash2 className="size-4" aria-hidden />
+              Delete all
+            </Button>
+          </span>
+        </div>
+
+        {entries === null ? (
+          <div className="space-y-3 p-5">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-12 w-full" />
+            ))}
+          </div>
+        ) : list.length === 0 ? (
+          <EmptyState icon={<Radar className="size-8" aria-hidden />} title="Nothing saved yet">
+            {status?.enabled
+              ? 'Use an AI CLI on one of your computers; its steps show up here within seconds.'
+              : 'Turn the agent tracker on, then use an AI CLI on one of your computers.'}
+          </EmptyState>
+        ) : (
+          <ul className="divide-y divide-border">
+            {list.map((e) => (
+              <EntryRow
+                key={e.id}
+                entry={e}
+                checked={selected.has(e.id)}
+                expanded={open === e.id}
+                onCheck={(on) => {
+                  setSelected((prev) => {
+                    const s = new Set(prev);
+                    if (on) s.add(e.id);
+                    else s.delete(e.id);
+                    return s;
+                  });
+                }}
+                onToggle={() => {
+                  setOpen((cur) => (cur === e.id ? null : e.id));
+                }}
+                onNote={(note) => {
+                  setEntries((prev) =>
+                    (prev ?? []).map((x) => (x.id === e.id ? { ...x, note } : x)),
+                  );
+                }}
+                onExport={() => {
+                  exportCsv([e.id]);
+                }}
+                onDelete={() => {
+                  setPending({ kind: 'delete', ids: [e.id], label: 'this entry' });
+                }}
+              />
+            ))}
+          </ul>
+        )}
+      </Card>
+      {next ? (
+        <div className="mt-4 flex justify-center">
+          <Button variant="secondary" onClick={loadMore} loading={busy === 'more'}>
+            Show older
+          </Button>
+        </div>
+      ) : null}
+
+      <ConfirmDialog
+        open={pending !== null}
+        onOpenChange={(o) => {
+          if (!o) setPending(null);
+        }}
+        title="Delete from the agent tracker?"
+        description={`This deletes ${pending?.label ?? ''} for good. It can't be undone.`}
+        confirmLabel="Delete"
+        tone="danger"
+        loading={busy === 'delete'}
+        onConfirm={() => {
+          if (pending) remove(pending.ids);
+        }}
+      />
+    </>
+  );
+}
+
+function EntryRow({
+  entry: e,
+  checked,
+  expanded,
+  onCheck,
+  onToggle,
+  onNote,
+  onExport,
+  onDelete,
+}: {
+  entry: TraceSummary;
+  checked: boolean;
+  expanded: boolean;
+  onCheck: (on: boolean) => void;
+  onToggle: () => void;
+  onNote: (note: string) => void;
+  onExport: () => void;
+  onDelete: () => void;
+}) {
+  const tokens = (e.inputTokens ?? 0) + (e.outputTokens ?? 0);
+  return (
+    <li className="px-5 py-3">
+      <div className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          aria-label={`Select entry from ${e.machineName}, ${relativeTime(e.ts)}`}
+          className="mt-1.5 size-4 shrink-0 accent-[var(--accent)]"
+          checked={checked}
+          onChange={(ev) => {
+            onCheck(ev.target.checked);
+          }}
+        />
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left"
+          aria-expanded={expanded}
+          onClick={onToggle}
+        >
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            <span className="font-medium">{e.machineName}</span>
+            <span className="text-muted">
+              {e.cli ?? e.keySlug}
+              {e.model ? ` · ${e.model}` : ''}
+            </span>
+            {e.status >= 400 ? <Badge tone="danger">Error {e.status}</Badge> : null}
+            <span className="ml-auto whitespace-nowrap text-xs text-muted">
+              <time dateTime={e.ts} title={dateTime(e.ts)}>
+                {relativeTime(e.ts)}
+              </time>
+              {tokens > 0 ? ` · ${tokens.toLocaleString()} tokens` : ''}
+            </span>
+          </div>
+          <p className="mt-1 line-clamp-2 break-words text-sm">{e.preview || '(no text)'}</p>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {ORDER.filter((t) => e.counts[t]).map((t) => (
+              <Badge key={t} tone={STEP[t].tone}>
+                {e.counts[t]} {STEP[t].label.toLowerCase()}
+              </Badge>
+            ))}
+            {e.note ? <Badge>Note: {e.note}</Badge> : null}
+          </div>
+        </button>
+      </div>
+      {expanded ? (
+        <EntryDetail
+          id={e.id}
+          note={e.note}
+          onNote={onNote}
+          onExport={onExport}
+          onDelete={onDelete}
+        />
+      ) : null}
+    </li>
+  );
+}
+
+function EntryDetail({
+  id,
+  note,
+  onNote,
+  onExport,
+  onDelete,
+}: {
+  id: string;
+  note: string;
+  onNote: (note: string) => void;
+  onExport: () => void;
+  onDelete: () => void;
+}) {
+  const [entry, setEntry] = useState<TraceEntry | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState(note);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api<TraceEntry>(`/api/tracker/entries/${encodeURIComponent(id)}`)
+      .then((x) => {
+        if (live) setEntry(x);
+      })
+      .catch((err: unknown) => {
+        if (live) setError(errorMessage(err));
+      });
+    return () => {
+      live = false;
+    };
+  }, [id]);
+
+  const save = () => {
+    setSaving(true);
+    api<TraceEntry>(`/api/tracker/entries/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: { note: draft },
+    })
+      .then((x) => {
+        onNote(x.note);
+        setDraft(x.note);
+      })
+      .catch((err: unknown) => {
+        setError(errorMessage(err));
+      })
+      .finally(() => {
+        setSaving(false);
+      });
+  };
+
+  return (
+    <div className="mt-3 space-y-3 pl-7">
+      {error ? <Alert tone="danger">{error}</Alert> : null}
+      {entry === null && !error ? <Skeleton className="h-24 w-full" /> : null}
+      {entry ? (
+        <ol className="space-y-2">
+          {entry.steps.map((s, i) => (
+            <li key={i} className="rounded-[var(--radius-input)] border border-border bg-bg p-3">
+              <div className="mb-1 flex items-center gap-2 text-xs">
+                <Badge tone={STEP[s.type].tone}>{STEP[s.type].label}</Badge>
+                {s.name ? <span className="font-mono text-muted">{s.name}</span> : null}
+              </div>
+              <pre
+                className={cn(
+                  'max-h-80 overflow-auto whitespace-pre-wrap break-words font-sans text-sm',
+                  (s.type === 'command' ||
+                    s.type === 'tool_call' ||
+                    s.type === 'mcp' ||
+                    s.type === 'tool_result') &&
+                    'font-mono text-xs',
+                )}
+              >
+                {s.text}
+              </pre>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="block min-w-48 flex-1 text-sm">
+          <span className="mb-1 block font-medium">Note</span>
+          <input
+            className="block min-h-11 w-full rounded-[var(--radius-input)] border border-border bg-bg px-3 text-base focus-visible:outline-2"
+            value={draft}
+            maxLength={500}
+            placeholder="Add a note to find this later"
+            onChange={(ev) => {
+              setDraft(ev.target.value);
+            }}
+            onKeyDown={(ev) => {
+              if (ev.key === 'Enter') save();
+            }}
+          />
+        </label>
+        <Button variant="secondary" onClick={save} loading={saving} disabled={draft === note}>
+          Save note
+        </Button>
+        <Button variant="ghost" onClick={onExport}>
+          <Download className="size-4" aria-hidden />
+          Export
+        </Button>
+        <Button variant="ghost" className="text-danger" onClick={onDelete}>
+          <Trash2 className="size-4" aria-hidden />
+          Delete
+        </Button>
+      </div>
+    </div>
+  );
+}

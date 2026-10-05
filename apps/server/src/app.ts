@@ -21,6 +21,7 @@ import { registerSecurity } from './http/security.ts';
 import { AppError } from './lib/errors.ts';
 import { newId } from './lib/ids.ts';
 import { gatewayRoutes } from './gateway/relay.ts';
+import { trackerRoutes } from './routes/tracker.ts';
 import { machineScriptRoutes } from './gateway/script.ts';
 import { auditRoutes } from './routes/audit.ts';
 import { authRoutes } from './routes/auth.ts';
@@ -142,6 +143,7 @@ export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<Fa
   await app.register(securityRoutes(s));
   await app.register(auditRoutes(s));
   await app.register(gatewayAdminRoutes(s));
+  await app.register(trackerRoutes(s));
   await app.register(gatewayRoutes(s));
   await app.register(machineScriptRoutes(s));
   await app.register(terminalRoutes(s));

@@ -278,7 +278,9 @@ strip_block() {
 
 # bash reads only the first of .bash_profile, .bash_login and .profile when you
 # log in, so a computer that has a .bash_profile never reads .profile. Every
-# start-up file that exists gets the line, and .profile is created if none do.
+# start-up file that exists gets the lines, and .profile is created if none do.
+# They go at the end of each file (again on every refresh), so they run after
+# whatever else changes PATH there.
 add_path() {
   files=''
   for rc in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc" \
@@ -293,7 +295,10 @@ add_path() {
     strip_block "$rc"
     {
       say "$MARK_BEGIN"
-      say "case \":\$PATH:\" in *\":$BIN:\"*) ;; *) export PATH=\"$BIN:\$PATH\" ;; esac"
+      # Always first, even when an earlier line (Ubuntu's .profile adding
+      # ~/.local/bin, where Claude Code installs itself) went in front of it.
+      say "_abx=\":\$PATH:\"; while case \"\$_abx\" in *\":$BIN:\"*) true ;; *) false ;; esac; do _abx=\"\${_abx%%\":$BIN:\"*}:\${_abx#*\":$BIN:\"}\"; done"
+      say "_abx=\"\${_abx#:}\"; _abx=\"\${_abx%:}\"; export PATH=\"$BIN\${_abx:+:\$_abx}\"; unset _abx"
       say "$MARK_END"
     } >>"$rc"
   done

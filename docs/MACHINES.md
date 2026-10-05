@@ -48,7 +48,7 @@ On that computer, `agentbox-machine status` shows what's set up. After you chang
 - `~/.config/agentbox/pass`: the pass, readable only by you (0600).
 - `~/.local/share/agentbox/bin/`: small wrapper scripts named after each CLI, plus `agentbox-machine`.
 - `~/.local/share/agentbox/codex`, `grok` and `gemini`: those CLIs keep their settings and history here instead of in `~/.codex`, `~/.grok` and `~/.gemini`. This is on purpose: a login already stored on the computer (a ChatGPT, Grok or Google sign-in) is then never read or sent anywhere.
-- One PATH line between `# >>> agentbox machine >>>` markers in each of `~/.profile`, `~/.bash_profile`, `~/.bash_login`, `~/.bashrc`, `~/.zshrc` and `~/.zprofile` that exists. bash reads only the first of `.bash_profile`, `.bash_login` and `.profile` when you log in, so all of them get the line.
+- One PATH line between `# >>> agentbox machine >>>` markers in each of `~/.profile`, `~/.bash_profile`, `~/.bash_login`, `~/.bashrc`, `~/.zshrc` and `~/.zprofile` that exists. bash reads only the first of `.bash_profile`, `.bash_login` and `.profile` when you log in, so all of them get the line. The line puts agentbox's `bin` folder first in PATH, even when it was already there further back (Ubuntu's `.profile` adds `~/.local/bin`, where Claude Code installs itself, after `.bashrc` runs), and it is moved to the end of each file on every refresh.
 
 ### On Windows
 

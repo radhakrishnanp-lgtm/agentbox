@@ -118,7 +118,28 @@ Open **Logs** in agentbox. It shows:
 
 Pick **Last 24 hours** or **Last 7 days**, one computer, or **Only requests that failed**. **CSV** downloads the requests shown. The page refreshes itself every 30 seconds.
 
-Logs hold only which computer, key and model, never what was asked or answered. agentbox deletes each record after 7 days by itself.
+The **Usage** tab holds only which computer, key and model, never what was asked or answered. agentbox deletes each record after 7 days by itself.
+
+### Agent tracker (off unless you turn it on)
+
+The **Agent tracker** tab in **Logs** saves what the AI agents on your computers actually do. For each request it keeps:
+
+- **Prompt:** what you typed.
+- **Thinking:** the model's reasoning, when the provider sends it.
+- **Command:** shell commands the agent runs (bash, shell, exec_command and the like).
+- **MCP:** calls to MCP tools, shown as "server · tool" with their input.
+- **Tool** and **Result:** other tool calls (read a file, edit a file …) and what they returned.
+- **Answer:** the model's reply.
+
+It reads what passes through agentbox, so it works for claude, codex, grok, kimi and gemini on every computer with nothing new to install.
+
+- It is **off** by default. **Turn on** asks for your passkey or authenticator code. **Turn off** stops saving but keeps what was saved.
+- What it saves is encrypted on agentbox and kept until you delete it. It keeps the newest 20,000 entries and drops older ones.
+- Open an entry to see its steps in order and add a **note**.
+- Tick entries, or **Select all**, then **Export selected** or **Delete selected**. **Export all** and **Delete all** cover every saved entry. Exports are CSV files with one row per step and also ask for your passkey or code.
+- New entries show up by themselves every 10 seconds while the page is open.
+
+Prompts and answers can hold secrets you pasted into a CLI. Turn the tracker on when you need it, and delete what you no longer need.
 
 ## 7. If something goes wrong
 
@@ -130,6 +151,7 @@ Logs hold only which computer, key and model, never what was asked or answered. 
 | "… run agentbox-machine refresh"                                       | Run `agentbox-machine refresh` on that computer                                                                                           |
 | Codex: "not signed in with ChatGPT" or "expired"                       | In an agentbox terminal run `codex login --device-auth` again                                                                             |
 | Grok login expired                                                     | In an agentbox terminal run `grok` and sign in again                                                                                      |
+| Linux or Mac: `claude` still opens its own sign-in screen              | Run `agentbox-machine refresh`, then open a new terminal. agentbox's folder now goes first in PATH, even ahead of `~/.local/bin`          |
 | A CLI isn't found on that computer                                     | Install it there, open a new terminal, then run `agentbox-machine refresh`                                                                |
 | Windows: "Windows finds the claude in … (system PATH) before agentbox" | Run `agentbox-machine refresh` and say yes when Windows asks for permission. If the CLI is under Program Files, type `claude.cmd` instead |
 

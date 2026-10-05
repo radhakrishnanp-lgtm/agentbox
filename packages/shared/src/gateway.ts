@@ -415,3 +415,55 @@ export interface GatewayLogs {
   /** Pass as `before` to get older rows; null when there are no more. */
   nextBefore: string | null;
 }
+
+/** One step of what an agent did, as the agent tracker saw it pass through agentbox. */
+export type TraceStepType =
+  'prompt' | 'thinking' | 'answer' | 'tool_call' | 'command' | 'mcp' | 'tool_result';
+
+export interface TraceStep {
+  type: TraceStepType;
+  /** Tool name for tool calls, commands, MCP calls and their results. */
+  name?: string;
+  text: string;
+}
+
+export interface TrackerStatus {
+  enabled: boolean;
+  entries: number;
+  /** Entries kept at most; the oldest go first beyond this. */
+  maxEntries: number;
+}
+
+export interface TraceSummary {
+  id: string;
+  ts: string;
+  machineId: string;
+  machineName: string;
+  keySlug: string;
+  cli: string | null;
+  model: string | null;
+  status: number;
+  durationMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  counts: Partial<Record<TraceStepType, number>>;
+  /** The start of the prompt (or first step), to recognise the entry. */
+  preview: string;
+  note: string;
+}
+
+export interface TracePage {
+  entries: TraceSummary[];
+  nextBefore: string | null;
+}
+
+export interface TraceEntry extends TraceSummary {
+  steps: TraceStep[];
+}
+
+export const TRACE_LIMITS = {
+  noteMax: 500,
+  stepTextMax: 20_000,
+  stepsMax: 300,
+  maxEntries: 20_000,
+} as const;
