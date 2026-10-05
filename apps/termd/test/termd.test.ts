@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FrameDecoder, TERMD_FRAME, encodeFrame } from '@agentbox/shared/termd';
 import { loadTermdConfig, terminalEnv, type TermdConfig } from '../src/config.ts';
 import { Termd } from '../src/server.ts';
+import { CODEX_CLIENT_ID, CODEX_TOKEN_URL, CodexLogin, readCodexLogin } from '../src/codex.ts';
 import { GrokLogin, XAI_ISSUER, jwtExpiry, readGrokLogin } from '../src/grok.ts';
 import { explainMountFailure, mountPoints } from '../src/vault.ts';
 
@@ -420,5 +421,109 @@ describe('Grok login tokens for machines', () => {
     writeFileSync(join(home, '.grok/auth.json'), JSON.stringify(record(jwt(past), past)));
     await expect(login.token()).rejects.toThrow(/run grok login/);
     rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe('Codex (ChatGPT) login for machines', () => {
+  const jwt = (claims: object) =>
+    `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature-part`;
+  const access = (expMs: number) => jwt({ exp: Math.floor(expMs / 1000) });
+  const idToken = jwt({
+    email: 'krish@example.com',
+    'https://api.openai.com/auth': {
+      chatgpt_account_id: 'acct-from-id-token',
+      chatgpt_plan_type: 'plus',
+    },
+  });
+  const authJson = (accessToken: string, extra: object = {}) =>
+    JSON.stringify({
+      OPENAI_API_KEY: null,
+      tokens: { id_token: idToken, access_token: accessToken, refresh_token: 'rt-1', ...extra },
+      last_refresh: '2026-10-01T00:00:00Z',
+    });
+  const home = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'termd-codex-'));
+    execFileSync('mkdir', ['-p', join(dir, '.codex')]);
+    return dir;
+  };
+
+  it('reads the ChatGPT login, with the account from the file or the id token', () => {
+    const exp = Date.now() + 3_600_000;
+    const got = readCodexLogin(authJson(access(exp), { account_id: 'acct-1' }));
+    expect(got?.token).toBe(access(exp));
+    expect(got?.accountId).toBe('acct-1');
+    expect(readCodexLogin(authJson(access(exp)))?.accountId).toBe('acct-from-id-token');
+    // An API-key login, or anything else, is not a ChatGPT login.
+    expect(readCodexLogin(JSON.stringify({ OPENAI_API_KEY: 'sk-x' }))).toBeNull();
+    expect(readCodexLogin('not json')).toBeNull();
+  });
+
+  it('hands out the token while it has time left, without refreshing', async () => {
+    const dir = home();
+    const exp = Date.now() + 3_600_000;
+    writeFileSync(join(dir, '.codex/auth.json'), authJson(access(exp)));
+    let calls = 0;
+    const fetchStub: typeof fetch = () => {
+      calls++;
+      return Promise.resolve(new Response('{}'));
+    };
+    const login = new CodexLogin(dir, Date.now, fetchStub);
+    const t = await login.token();
+    expect(t).toEqual({
+      token: access(exp),
+      accountId: 'acct-from-id-token',
+      expiresAt: Math.floor(exp / 1000) * 1000,
+    });
+    expect(calls).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refreshes like Codex does and writes the new tokens back, keeping the rest', async () => {
+    const dir = home();
+    const soon = Date.now() + 60_000;
+    const later = Date.now() + 10 * 86_400_000;
+    const path = join(dir, '.codex/auth.json');
+    writeFileSync(path, authJson(access(soon), { account_id: 'acct-1' }));
+    const sent: { url: string; body: unknown }[] = [];
+    const login = new CodexLogin(dir, Date.now, (async (url: string, init: RequestInit) => {
+      sent.push({ url, body: JSON.parse(init.body as string) });
+      return new Response(JSON.stringify({ access_token: access(later), refresh_token: 'rt-2' }));
+    }) as unknown as typeof fetch);
+    // Two machines asking at once cause one refresh.
+    const [a, b] = await Promise.all([login.token(), login.token()]);
+    expect(a.token).toBe(access(later));
+    expect(b.token).toBe(access(later));
+    expect(sent).toEqual([
+      {
+        url: CODEX_TOKEN_URL,
+        body: { client_id: CODEX_CLIENT_ID, grant_type: 'refresh_token', refresh_token: 'rt-1' },
+      },
+    ]);
+    const saved = JSON.parse(readFileSync(path, 'utf8')) as {
+      tokens: unknown;
+      last_refresh: unknown;
+      OPENAI_API_KEY: unknown;
+    };
+    expect(saved.tokens).toEqual({
+      id_token: idToken,
+      access_token: access(later),
+      refresh_token: 'rt-2',
+      account_id: 'acct-1',
+    });
+    expect(saved.OPENAI_API_KEY).toBeNull();
+    expect(saved.last_refresh).not.toBe('2026-10-01T00:00:00Z');
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('says what to do when Codex is not signed in, or the login is dead', async () => {
+    const dir = home();
+    const refused = (async () =>
+      new Response('{"error":"invalid_grant"}', { status: 400 })) as typeof fetch;
+    const login = new CodexLogin(dir, Date.now, refused);
+    await expect(login.token()).rejects.toThrow(/codex login --device-auth/);
+    writeFileSync(join(dir, '.codex/auth.json'), authJson(access(Date.now() - 1000)));
+    await expect(login.token()).rejects.toThrow(/has expired/);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

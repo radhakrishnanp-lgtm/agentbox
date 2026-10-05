@@ -14,7 +14,7 @@ import { Transform } from 'node:stream';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { request as upstreamRequest, Agent } from 'undici';
 import { passSchema } from '@agentbox/shared';
-import type { TermdGrokToken } from '@agentbox/shared/termd';
+import type { TermdCodexToken, TermdGrokToken } from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { MINUTE, iso } from '../lib/clock.ts';
 import type { LockoutPolicy } from '../security/lockout.ts';
@@ -67,6 +67,8 @@ const DROP_REQUEST = new Set([
   'x-real-ip',
   'true-client-ip',
   'x-agentbox',
+  // Set by agentbox for ChatGPT logins; never taken from the machine.
+  'chatgpt-account-id',
 ]);
 const DROP_REQUEST_PATTERN = /^(x-forwarded-|cf-|sec-|x-amzn-)|(token|secret|password|cookie)/i;
 /** Kept although they match the pattern: flags, not credentials. */
@@ -151,6 +153,7 @@ export function upstreamHeaders(
   incoming: FastifyRequest['headers'],
   key: AiKeyRow,
   secret: string,
+  accountId?: string,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(incoming)) {
@@ -170,6 +173,11 @@ export function upstreamHeaders(
     case 'bearer':
     case 'grok-login':
       out['authorization'] = `Bearer ${secret}`;
+      break;
+    case 'codex-login':
+      // What Codex itself sends with a ChatGPT sign-in.
+      out['authorization'] = `Bearer ${secret}`;
+      if (accountId) out['chatgpt-account-id'] = accountId;
       break;
     case 'anthropic-oauth': {
       out['authorization'] = `Bearer ${secret}`;
@@ -398,6 +406,27 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       }
     };
 
+    /** The vault's ChatGPT login for Codex, or a reply explaining why there is none. */
+    const vaultCodexToken = async (
+      reply: FastifyReply,
+    ): Promise<TermdCodexToken | FastifyReply> => {
+      try {
+        return await s.terminals.client.request<TermdCodexToken>({ op: 'codex.token' });
+      } catch (err) {
+        const message =
+          err instanceof TermdRefused
+            ? err.code === 'vault_locked'
+              ? 'the vault on agentbox is locked. Unlock it in agentbox → Terminals.'
+              : err.message
+            : err instanceof AppError
+              ? err.message
+              : 'could not get the ChatGPT login.';
+        const status = err instanceof TermdRefused && err.code !== 'internal' ? 403 : 503;
+        // 403, not 401, so codex shows the message instead of retrying.
+        return fail(reply, status, 'api_error', message);
+      }
+    };
+
     // What the machine setup script needs: which CLIs to wire up, and where.
     app.get('/gw/_machine', { config: { rateLimit: false } }, async (request, reply) => {
       const m = authenticate(request, reply, undefined);
@@ -521,7 +550,9 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         seen(m, request.ip);
 
         let secret: string;
+        let accountId: string | undefined;
         let upstreamBase = key.upstream;
+        let upstreamPath = path;
         if (key.auth === 'grok-login') {
           if (path === '/_session' && request.method === 'GET')
             return grokSession(request, reply, m);
@@ -539,6 +570,14 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           secret = token;
           // Keys added before this change stored xAI's sign-in address instead.
           if (upstreamBase === 'https://auth.x.ai') upstreamBase = GROK_CHAT_PROXY;
+        } else if (key.auth === 'codex-login') {
+          const login = await vaultCodexToken(reply);
+          if (!('token' in login)) return login;
+          secret = login.token;
+          accountId = login.accountId;
+          // The machine's codex uses <gateway>/v1 like any OpenAI-style provider;
+          // ChatGPT's Codex backend has no /v1 (…/backend-api/codex/responses).
+          if (upstreamPath.startsWith('/v1/')) upstreamPath = upstreamPath.slice(3);
         } else {
           secret = s.gateway.revealSecret(key);
         }
@@ -585,9 +624,9 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
 
         let upstream: Awaited<ReturnType<typeof upstreamRequest>>;
         try {
-          upstream = await upstreamRequest(`${upstreamBase}${path}${query}`, {
+          upstream = await upstreamRequest(`${upstreamBase}${upstreamPath}${query}`, {
             method: request.method as 'GET',
-            headers: upstreamHeaders(request.headers, key, secret),
+            headers: upstreamHeaders(request.headers, key, secret, accountId),
             ...(body && request.method !== 'GET' ? { body } : {}),
             signal: ctrl.signal,
             dispatcher,

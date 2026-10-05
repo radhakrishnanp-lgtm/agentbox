@@ -106,7 +106,17 @@ export class FakeProvider {
           });
           return;
         }
-        if (path === '/v1/chat/completions') {
+        if (path === '/backend-api/codex/responses') {
+          // ChatGPT's Codex backend (a Codex ChatGPT login).
+          json(200, {
+            id: 'resp_1',
+            object: 'response',
+            output: [],
+            usage: { input_tokens: 9, output_tokens: 3 },
+          });
+          return;
+        }
+        if (path === '/v1/chat/completions' || path === '/coding/v1/chat/completions') {
           json(200, {
             id: 'chatcmpl-1',
             object: 'chat.completion',
