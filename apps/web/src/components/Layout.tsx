@@ -1,4 +1,12 @@
-import { Activity, House, LogOut, Server, ShieldCheck, SquareTerminal } from 'lucide-react';
+import {
+  Activity,
+  House,
+  LogOut,
+  ScrollText,
+  Server,
+  ShieldCheck,
+  SquareTerminal,
+} from 'lucide-react';
 import { useState, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import { errorMessage } from '../lib/api.ts';
@@ -34,6 +42,7 @@ const NAV = [
   { to: '/', label: 'Home', icon: House },
   { to: '/terminals', label: 'Terminals', icon: SquareTerminal },
   { to: '/machines', label: 'Machines', icon: Server },
+  { to: '/logs', label: 'Logs', icon: ScrollText },
   { to: '/security', label: 'Security', icon: ShieldCheck },
   { to: '/activity', label: 'Activity', icon: Activity },
 ] as const;

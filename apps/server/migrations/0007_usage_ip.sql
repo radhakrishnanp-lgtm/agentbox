@@ -1,0 +1,1 @@
+ALTER TABLE `gateway_usage` ADD `ip` text;

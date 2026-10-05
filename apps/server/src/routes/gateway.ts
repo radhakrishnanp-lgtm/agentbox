@@ -11,6 +11,7 @@ import {
   aiKeyCreateSchema,
   machineCreateSchema,
   machineUpdateSchema,
+  type GatewayLogs,
   type GatewayOverview,
   type GatewayUsageRow,
   type MachineCreated,
@@ -198,6 +199,7 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
           ts: iso(r.ts),
           machineId: r.machineId,
           keySlug: r.keySlug,
+          ip: r.ip,
           method: r.method,
           path: r.path,
           model: r.model,
@@ -207,6 +209,30 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
           outputTokens: r.outputTokens,
         })),
       }),
+    );
+
+    app.get(
+      '/api/gateway/logs',
+      {
+        schema: {
+          querystring: z.object({
+            period: z.enum(['24h', '7d']).default('7d'),
+            machineId: z.uuid().optional(),
+            errors: z.enum(['1']).optional(),
+            limit: z.coerce.number().int().min(1).max(200).default(50),
+            before: z.string().max(100).optional(),
+          }),
+        },
+        preHandler: requireSession({ passive: true }),
+      },
+      async (request): Promise<GatewayLogs> =>
+        s.gateway.logs({
+          period: request.query.period,
+          machineId: request.query.machineId,
+          errorsOnly: request.query.errors === '1',
+          limit: request.query.limit,
+          before: request.query.before,
+        }),
     );
   };
 }

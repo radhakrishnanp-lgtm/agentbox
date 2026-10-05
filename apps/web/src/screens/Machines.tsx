@@ -1324,7 +1324,8 @@ function HowItWorks() {
         <p>
           A machine sends its AI requests to agentbox with its pass. agentbox checks the pass, the
           allowed addresses and the limits, then adds your real key and forwards the request. Every
-          request shows up above (which key, how many tokens), never its content.
+          request shows up in Logs (which computer, key and model, how many tokens), never its
+          content.
         </p>
         <p>
           Someone with root on that computer can use your AI through the pass until you stop it.
