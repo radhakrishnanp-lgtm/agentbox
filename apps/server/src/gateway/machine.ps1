@@ -16,7 +16,9 @@
 #   %LOCALAPPDATA%\agentbox\bin\        small wrappers named claude.cmd, codex.cmd, ...
 #   %LOCALAPPDATA%\agentbox\<cli>\      own settings for codex, grok and gemini
 #                                       (grok-login when grok uses your SuperGrok login)
-# plus that bin folder at the front of your own PATH.
+# plus that bin folder at the front of your own PATH. Only if a CLI installed just
+# for you sits in the system PATH (which Windows searches first) does it ask
+# Windows for administrator permission, once, to move that folder to your own PATH.
 #
 # This file is plain ASCII on purpose: Windows PowerShell 5.1 reads files
 # without a byte order mark in the local code page.
@@ -344,17 +346,23 @@
     if ($State.Wired -notcontains 'grok') { $State.Wired += 'grok' }
   }
 
+  function Expand-Dir([string]$Dir) { return [Environment]::ExpandEnvironmentVariables($Dir).Trim().TrimEnd('\') }
+
   # Your own PATH lives in the registry. It is read and written raw, so entries
-  # like %USERPROFILE%\... keep working.
-  function Set-UserPath([bool]$Add) {
-    $env:Path = (@($env:Path -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ne $Bin) })) -join ';'
-    if ($Add) { $env:Path = "$Bin;$env:Path" }
+  # like %USERPROFILE%\... keep working. $After are folders to put right after
+  # agentbox's (folders moved here from the system PATH).
+  function Set-UserPath([bool]$Add, [string[]]$After = @()) {
+    $move = @($After | ForEach-Object { (Expand-Dir $_).ToLowerInvariant() })
+    $isOurs = { param($d) $e = Expand-Dir $d; ($e -eq $Bin) -or ($move -contains $e.ToLowerInvariant()) }
+    $env:Path = (@($env:Path -split ';' | Where-Object { $_ -and -not (& $isOurs $_) })) -join ';'
+    if ($Add) { $env:Path = (@($Bin) + $After + @($env:Path)) -join ';' }
     if (-not $OnWindows) { return }
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
     try {
       $old = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-      $parts = @($old -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ne $Bin) })
-      if ($Add) { $parts = @($Bin) + $parts }
+      $parts = @($old -split ';' | Where-Object { $_ -and -not (& $isOurs $_) })
+      if ($Add) { $parts = @($Bin) + $After + $parts }
+      elseif ($After) { $parts = $parts + $After }
       $new = $parts -join ';'
       if ($new -ne $old) {
         if ($new) { $key.SetValue('Path', $new, [Microsoft.Win32.RegistryValueKind]::ExpandString) }
@@ -365,6 +373,111 @@
     }
     # Tells Windows (and new terminals) that the environment changed.
     [Environment]::SetEnvironmentVariable('AGENTBOX_PATH_CHANGED', $null, 'User')
+  }
+
+  # Local tests can't touch the real system PATH; they hand one in instead.
+  $TestMode = $Proto -eq '=http,https'
+  if ($TestMode -and $env:AGENTBOX_TEST_SYSTEM_PATH) {
+    # As on Windows: the system PATH first, then your own.
+    $env:Path = (@(($env:AGENTBOX_TEST_SYSTEM_PATH -split ';') | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_) }) + @($env:Path)) -join ';'
+  }
+
+  # The system PATH (for every user), raw. Windows searches it before your own PATH.
+  function Get-SystemPath {
+    if ($TestMode -and ($null -ne $env:AGENTBOX_TEST_SYSTEM_PATH)) { return $env:AGENTBOX_TEST_SYSTEM_PATH }
+    if (-not $OnWindows) { return '' }
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment')
+    try { return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } finally { $key.Close() }
+  }
+
+  # A PATH without the given entries (compared as written, so it works the same
+  # when an administrator account runs it).
+  function Remove-PathEntries([string]$Path, [string[]]$Entries) {
+    $drop = @($Entries | ForEach-Object { $_.Trim().TrimEnd('\').ToLowerInvariant() })
+    return (@($Path -split ';' | Where-Object { $_ -and ($drop -notcontains $_.Trim().TrimEnd('\').ToLowerInvariant()) })) -join ';'
+  }
+
+  # System PATH folders that hold one of the wired CLIs: Windows finds that copy
+  # before agentbox's. Each has .Entry (as written) and .Dir (expanded).
+  function Get-ShadowDirs {
+    $found = @()
+    foreach ($entry in ((Get-SystemPath) -split ';')) {
+      $d = Expand-Dir $entry
+      if (-not $d -or $d -eq $Bin) { continue }
+      foreach ($cli in $State.Wired) {
+        $hit = $false
+        foreach ($ext in @('.com', '.exe', '.bat', '.cmd')) {
+          try { if (Test-Path -LiteralPath "$d\$cli$ext" -PathType Leaf) { $hit = $true } } catch { }
+        }
+        if ($hit -and -not ($found | Where-Object { $_.Dir -eq $d })) {
+          $found += [pscustomobject]@{ Entry = $entry; Dir = $d; Cli = $cli }
+        }
+      }
+    }
+    return $found
+  }
+
+  # True for a folder inside your own user folder: a program installed just for
+  # you, so moving it to your own PATH changes nothing for anyone else.
+  function Test-InProfile([string]$Dir) {
+    if (-not $env:USERPROFILE) { return $false }
+    $mine = (Expand-Dir $env:USERPROFILE).ToLowerInvariant()
+    $d = $Dir.ToLowerInvariant()
+    return $d.StartsWith("$mine\") -or $d.StartsWith("$mine/")
+  }
+
+  # Runs a script as administrator (Windows asks you first). False if you said no.
+  function Invoke-Elevated([string]$Code) {
+    if ($TestMode -and ($null -ne $env:AGENTBOX_TEST_SYSTEM_PATH)) {
+      if ($env:AGENTBOX_TEST_ELEVATE -eq 'deny') { return $false }
+      $env:AGENTBOX_TEST_SYSTEM_PATH = & ([scriptblock]::Create($Code))
+      return $true
+    }
+    $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+      & ([scriptblock]::Create($Code)) | Out-Null
+      return $true
+    }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Code))
+    try {
+      $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded)
+      return $p.ExitCode -eq 0
+    } catch {
+      return $false
+    }
+  }
+
+  # A CLI installed just for you but put in the system PATH (Claude Code's own
+  # installer can do this) hides agentbox's wrapper. Move that folder to your own
+  # PATH, after agentbox, so typing the command goes through agentbox.
+  function Repair-SystemPath {
+    $mine = @(Get-ShadowDirs | Where-Object { Test-InProfile $_.Dir })
+    if ($mine.Count -eq 0) { return }
+    $clis = @($mine | ForEach-Object { $_.Cli }) -join ', '
+    $dirs = @($mine | ForEach-Object { $_.Dir }) -join ', '
+    Say ''
+    Say "Windows finds your own $clis in $dirs before agentbox, because that folder is in the system PATH."
+    Say 'Moving it to your own PATH, after agentbox. Windows will ask for permission once.'
+    $list = (@($mine | ForEach-Object { "'" + ($_.Entry -replace "'", "''") + "'" })) -join ', '
+    $code = @"
+`$ErrorActionPreference = 'Stop'
+function Remove-PathEntries { ${function:Remove-PathEntries} }
+`$entries = @($list)
+if (`$env:AGENTBOX_TEST_SYSTEM_PATH -ne `$null) { return (Remove-PathEntries `$env:AGENTBOX_TEST_SYSTEM_PATH `$entries) }
+`$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', `$true)
+try {
+  `$old = [string]`$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+  `$key.SetValue('Path', (Remove-PathEntries `$old `$entries), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+} finally { `$key.Close() }
+[Environment]::SetEnvironmentVariable('AGENTBOX_PATH_CHANGED', `$null, 'Machine')
+"@
+    if (Invoke-Elevated $code) {
+      Set-UserPath $true @($mine | ForEach-Object { $_.Dir })
+      Say '  Done.'
+    } else {
+      Say '  Not changed, because Windows permission was not given. Run  agentbox-machine refresh  to try again.'
+    }
   }
 
   # The real CLI the wrapper would run: the first one on PATH outside agentbox.
@@ -420,14 +533,14 @@
       Say 'No AI tools are allowed for this machine yet. Allow some in agentbox > Machines, then run: agentbox-machine refresh'
     } else {
       Say "These commands now use your agentbox keys: $($State.Wired -join ' ')"
-      $systemPath = @()
-      if ($OnWindows) { $systemPath = @(([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') | ForEach-Object { $_.TrimEnd('\') }) }
+      $shadow = @(Get-ShadowDirs)
       foreach ($cli in $State.Wired) {
         $real = Find-RealCli $cli
+        $hidden = @($shadow | Where-Object { $_.Cli -eq $cli })
         if (-not $real) {
           Say "  ${cli}: install the $cli CLI as usual; it will use agentbox automatically"
-        } elseif ($systemPath -contains (Split-Path $real).TrimEnd('\')) {
-          Say "  ${cli}: installed for all users ($real), which Windows finds before agentbox."
+        } elseif ($hidden.Count -gt 0) {
+          Say "  ${cli}: Windows finds the $cli in $($hidden[0].Dir) (system PATH) before agentbox."
           Say "        Type $cli.cmd instead of $cli, or install $cli just for your user."
         } else {
           Say "  ${cli}: ready"
@@ -464,6 +577,7 @@
         Remove-Item Env:\AGENTBOX_PASS -ErrorAction SilentlyContinue
         Install-Setup $setup
         Set-UserPath $true
+        Repair-SystemPath
         Show-Report $setup
       }
       'refresh' {
@@ -481,6 +595,7 @@
         $setup = Get-Setup $pass
         Install-Setup $setup
         Set-UserPath $true
+        Repair-SystemPath
         Show-Report $setup
       }
       'status' {

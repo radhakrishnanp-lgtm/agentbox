@@ -245,6 +245,42 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
     expect(existsSync(pc.data)).toBe(false);
   });
 
+  it('moves a CLI installed just for you out of the system PATH, with your permission', async () => {
+    const base = await listen();
+    const keys = [
+      await addKey({ preset: 'anthropic', name: 'Claude', slug: 'anthropic' }),
+      await addKey({ preset: 'openai', name: 'OpenAI', slug: 'openai' }),
+    ];
+    const { pass } = await addMachine(keys.map((k) => k.id));
+    const pc = computer(base);
+    // Claude Code's own installer: just for you, but in the system PATH.
+    const profile = join(dir, 'Users', 'radhakp');
+    mkdirSync(join(profile, '.local', 'bin'), { recursive: true });
+    writeFileSync(join(profile, '.local', 'bin', 'claude.exe'), '');
+    // A codex installed for every user stays where it is.
+    const shared = join(dir, 'Program Files', 'codex');
+    mkdirSync(shared, { recursive: true });
+    writeFileSync(join(shared, 'codex.cmd'), '');
+    const env = {
+      AGENTBOX_PASS: pass,
+      USERPROFILE: profile,
+      AGENTBOX_TEST_SYSTEM_PATH: `C:\\Windows;%USERPROFILE%\\.local\\bin;${shared}`,
+    };
+
+    const denied = await pc.pwsh(pc.script, [], { ...env, AGENTBOX_TEST_ELEVATE: 'deny' });
+    expect(denied).toContain('Windows finds your own claude in');
+    expect(denied).toContain('Not changed, because Windows permission was not given');
+    expect(denied).toMatch(/claude: Windows finds the claude in .*\(system PATH\) before agentbox/);
+
+    const fixed = await pc.pwsh(pc.script, [], env);
+    expect(fixed).toContain('Moving it to your own PATH, after agentbox.');
+    expect(fixed).toContain('  Done.');
+    expect(fixed).toContain('  claude: ready');
+    // Not just for you: left alone, with a hint.
+    expect(fixed).toMatch(/codex: Windows finds the codex in .*Program Files.*\(system PATH\)/);
+    expect(fixed).toContain('Type codex.cmd instead of codex');
+  });
+
   it('refuses a wrong pass and a stopped machine, with the reason', async () => {
     const base = await listen();
     const key = await addKey({ preset: 'anthropic', name: 'Claude', slug: 'anthropic' });

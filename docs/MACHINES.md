@@ -55,7 +55,9 @@ On that computer, `agentbox-machine status` shows what's set up. After you chang
 - `%LOCALAPPDATA%\agentbox\pass`: the pass, readable only by you.
 - `%LOCALAPPDATA%\agentbox\bin\`: small `.cmd` wrappers named after each CLI (`claude.cmd`, `codex.cmd`, …), plus `agentbox-machine.cmd`. They work from PowerShell and the Command Prompt, and need no change to PowerShell's script policy.
 - `%LOCALAPPDATA%\agentbox\codex`, `grok` and `gemini`: the CLIs' own folders, as above.
-- That `bin` folder at the front of your own (user) PATH. Windows reads the system PATH first, so a CLI installed for all users (under Program Files) comes before agentbox. The setup tells you when that happens; then type `claude.cmd` instead of `claude`, or install the CLI just for your user (npm and the official installers do that by default).
+- That `bin` folder at the front of your own (user) PATH. Windows reads the system PATH first, so a CLI found there comes before agentbox.
+  - If that folder is inside your own user folder (for example `C:\Users\you\.local\bin` from Claude Code's installer), the setup moves it from the system PATH to your own PATH, right after agentbox. Windows asks for administrator permission once; nothing else changes and the CLI stays where it is. If you say no, run `agentbox-machine refresh` to be asked again.
+  - A CLI installed for all users (under Program Files) is left alone, since other people may use it. The setup tells you; type `claude.cmd` instead of `claude`, or install the CLI just for your user.
 
 Grok signs in through a small helper that uses Windows' own `curl.exe` (built into Windows 10 1803 and later).
 

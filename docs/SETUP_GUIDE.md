@@ -122,15 +122,16 @@ Logs hold only which computer, key and model, never what was asked or answered. 
 
 ## 7. If something goes wrong
 
-| Message                                          | What to do                                                                 |
-| ------------------------------------------------ | -------------------------------------------------------------------------- |
-| "the vault on agentbox is locked"                | Unlock the vault in **Terminals**                                          |
-| "this machine was stopped in agentbox"           | Press **Start** on that machine, if you meant it to work                   |
-| "this computer's address (…) is new"             | Press **Allow this address** on the machine in agentbox                    |
-| "… run agentbox-machine refresh"                 | Run `agentbox-machine refresh` on that computer                            |
-| Codex: "not signed in with ChatGPT" or "expired" | In an agentbox terminal run `codex login --device-auth` again              |
-| Grok login expired                               | In an agentbox terminal run `grok` and sign in again                       |
-| A CLI isn't found on that computer               | Install it there, open a new terminal, then run `agentbox-machine refresh` |
+| Message                                                                | What to do                                                                                                                                |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| "the vault on agentbox is locked"                                      | Unlock the vault in **Terminals**                                                                                                         |
+| "this machine was stopped in agentbox"                                 | Press **Start** on that machine, if you meant it to work                                                                                  |
+| "this computer's address (…) is new"                                   | Press **Allow this address** on the machine in agentbox                                                                                   |
+| "… run agentbox-machine refresh"                                       | Run `agentbox-machine refresh` on that computer                                                                                           |
+| Codex: "not signed in with ChatGPT" or "expired"                       | In an agentbox terminal run `codex login --device-auth` again                                                                             |
+| Grok login expired                                                     | In an agentbox terminal run `grok` and sign in again                                                                                      |
+| A CLI isn't found on that computer                                     | Install it there, open a new terminal, then run `agentbox-machine refresh`                                                                |
+| Windows: "Windows finds the claude in … (system PATH) before agentbox" | Run `agentbox-machine refresh` and say yes when Windows asks for permission. If the CLI is under Program Files, type `claude.cmd` instead |
 
 ChatGPT login for Codex and the Kimi Code key are new and marked experimental. If either fails, note the exact error message.
 
