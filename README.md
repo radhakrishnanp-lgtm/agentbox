@@ -8,6 +8,8 @@ A self-hosted gateway that keeps your AI coding CLI logins (Claude Code, Grok, K
 
 Sign in with a passkey. On a computer that has none, you can also use a password plus the code from your authenticator app, once you turn that on in **Security**. The password is stored only as a scrypt hash, it never works without a fresh authenticator code, and 5 wrong tries pause it while passkeys keep working. Actions that change your sign-in methods, like adding a passkey or changing the password, still ask for your passkey unless you signed in within the last 5 minutes.
 
+**New here?** [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) walks through signing in your subscriptions, adding a computer, and stopping or starting it.
+
 ## Terminals in your browser
 
 Open a terminal on the server from any browser, phone included. Sessions keep running when you close the tab. Install your AI CLIs there and sign in once: their logins live in an encrypted vault on the server, locked with a password only you know. See [docs/TERMINALS.md](docs/TERMINALS.md), including what the vault can and can't protect against.
