@@ -199,6 +199,7 @@ export class RelayState {
   readonly #live = new Map<string, Set<AbortController>>();
   readonly #auditedAt = new Map<string, number>();
   #timer: NodeJS.Timeout | undefined;
+  #cleanup: NodeJS.Timeout | undefined;
 
   /** Sliding one-minute window. Returns seconds to wait, or 0 if allowed. */
   take(machineId: string, rpm: number, now: number): number {
@@ -231,10 +232,10 @@ export class RelayState {
     for (const c of this.#live.get(machineId) ?? []) c.abort(new Error('machine revoked'));
   }
 
-  /** Audit a repeated event at most once per hour per machine and reason. */
-  shouldAudit(key: string, now: number): boolean {
+  /** Lets a repeated event through at most once per `every` (an hour) per machine and reason. */
+  shouldAudit(key: string, now: number, every = 60 * MINUTE): boolean {
     const last = this.#auditedAt.get(key);
-    if (last !== undefined && now - last < 60 * MINUTE) return false;
+    if (last !== undefined && now - last < every) return false;
     this.#auditedAt.set(key, now);
     return true;
   }
@@ -247,8 +248,16 @@ export class RelayState {
     this.#timer.unref();
   }
 
+  /** Deletes old request records now and then every hour. */
+  startCleanup(prune: () => void): void {
+    prune();
+    this.#cleanup = setInterval(prune, 60 * MINUTE);
+    this.#cleanup.unref();
+  }
+
   stop(): void {
     clearInterval(this.#timer);
+    clearInterval(this.#cleanup);
     for (const id of this.#live.keys()) this.cut(id);
   }
 }
@@ -264,6 +273,13 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
   return async (app) => {
     const state = s.relay;
     state.startWatchdog((id) => s.gateway.isRevoked(id));
+    state.startCleanup(() => {
+      try {
+        s.gateway.pruneUsage();
+      } catch (err) {
+        app.log.warn({ err: (err as Error).message }, 'could not delete old request records');
+      }
+    });
     app.addHook('onClose', async () => {
       state.stop();
     });
@@ -485,8 +501,38 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
 
         const key = s.gateway.keyBySlug(slug);
         if (!key) return fail(reply, 404, 'not_found_error', `there is no key called “${slug}”.`);
+        const body = Buffer.isBuffer(request.body) ? request.body : undefined;
+        const model = requestModel(body, path);
+        /**
+         * Puts a request agentbox answered itself (a limit, a locked vault) in the
+         * logs. A machine that keeps getting refused gets one row a minute per reason.
+         */
+        const logRefused = (status: number) => {
+          if (!state.shouldAudit(`${m.id}:refused:${String(status)}`, s.clock.now(), MINUTE))
+            return;
+          s.gateway.recordUsage({
+            ts: started,
+            machineId: m.id,
+            keyId: key.id,
+            keySlug: key.slug,
+            method: request.method,
+            path,
+            model,
+            status,
+            durationMs: Math.max(0, s.clock.now() - started),
+            requestBytes: body?.length ?? 0,
+            responseBytes: 0,
+            inputTokens: null,
+            outputTokens: null,
+            ip: request.ip,
+          });
+        };
+        const refuse: typeof fail = (r, status, ...rest) => {
+          logRefused(status);
+          return fail(r, status, ...rest);
+        };
         if (!m.keyIds.includes(key.id)) {
-          return fail(
+          return refuse(
             reply,
             403,
             'permission_error',
@@ -507,7 +553,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
               details: { limit: 'requests_per_minute', value: m.rpm },
             });
           }
-          return fail(
+          return refuse(
             reply,
             429,
             'rate_limit_error',
@@ -516,7 +562,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           );
         }
         if (state.liveCount(m.id) >= MAX_CONCURRENT_PER_MACHINE) {
-          return fail(
+          return refuse(
             reply,
             429,
             'rate_limit_error',
@@ -537,7 +583,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
                 details: { limit: 'daily_tokens', value: m.dailyTokenLimit },
               });
             }
-            return fail(
+            return refuse(
               reply,
               429,
               'rate_limit_error',
@@ -558,7 +604,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             return grokSession(request, reply, m);
           if (path === '/_token') {
             // Older setups fetched the xAI token itself; that let it outlive Stop.
-            return fail(
+            return refuse(
               reply,
               403,
               'permission_error',
@@ -566,13 +612,19 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             );
           }
           const token = await vaultGrokToken(reply);
-          if (typeof token !== 'string') return token;
+          if (typeof token !== 'string') {
+            logRefused(reply.statusCode);
+            return token;
+          }
           secret = token;
           // Keys added before this change stored xAI's sign-in address instead.
           if (upstreamBase === 'https://auth.x.ai') upstreamBase = GROK_CHAT_PROXY;
         } else if (key.auth === 'codex-login') {
           const login = await vaultCodexToken(reply);
-          if (!('token' in login)) return login;
+          if (!('token' in login)) {
+            logRefused(reply.statusCode);
+            return login;
+          }
           secret = login.token;
           accountId = login.accountId;
           // The machine's codex uses <gateway>/v1 like any OpenAI-style provider;
@@ -582,8 +634,6 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           secret = s.gateway.revealSecret(key);
         }
 
-        const body = Buffer.isBuffer(request.body) ? request.body : undefined;
-        const model = requestModel(body, path);
         const ctrl = new AbortController();
         const untrack = state.track(m.id, ctrl);
         let responseBytes = 0;
@@ -609,6 +659,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             responseBytes,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
+            ip: request.ip,
           });
           s.gateway.touchKey(key.id);
         };

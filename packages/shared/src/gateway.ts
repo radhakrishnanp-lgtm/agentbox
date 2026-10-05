@@ -333,6 +333,8 @@ export interface GatewayUsageRow {
   ts: string;
   machineId: string;
   keySlug: string;
+  /** The address the machine called from (missing on rows from before it was recorded). */
+  ip: string | null;
   method: string;
   path: string;
   model: string | null;
@@ -340,4 +342,76 @@ export interface GatewayUsageRow {
   durationMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+}
+
+/** How long agentbox keeps the record of each request. Older ones are deleted. */
+export const USAGE_KEEP_DAYS = 7;
+
+/** A machine seen this recently counts as connected. */
+export const CONNECTED_WITHIN_MINUTES = 5;
+
+export type LogsPeriod = '24h' | '7d';
+
+export interface LogsMachine {
+  id: string;
+  name: string;
+  state: 'active' | 'stopped' | 'expired';
+  /** Talked to agentbox in the last few minutes. */
+  connected: boolean;
+  lastSeenAt: string | null;
+  lastIp: string | null;
+  requests: number;
+  /** Requests that got an error back (4xx or 5xx), refused by agentbox or the provider. */
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** The model it used most in the period. */
+  topModel: string | null;
+  lastRequestAt: string | null;
+}
+
+export interface LogsDay {
+  /** UTC date, YYYY-MM-DD. */
+  day: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface LogsModel {
+  model: string;
+  keySlug: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface LogsRow extends GatewayUsageRow {
+  machineName: string;
+}
+
+export interface GatewayLogs {
+  period: LogsPeriod;
+  since: string;
+  keepDays: number;
+  totals: {
+    machines: number;
+    connectedNow: number;
+    /** Machines that sent at least one request in the period. */
+    usedInPeriod: number;
+    requests: number;
+    errors: number;
+    inputTokens: number;
+    outputTokens: number;
+  };
+  /** Most tokens first. */
+  machines: LogsMachine[];
+  /** One entry per UTC day of the last week, oldest first. */
+  days: LogsDay[];
+  /** Most tokens first, at most 10. */
+  models: LogsModel[];
+  /** Newest first. */
+  rows: LogsRow[];
+  /** Pass as `before` to get older rows; null when there are no more. */
+  nextBefore: string | null;
 }

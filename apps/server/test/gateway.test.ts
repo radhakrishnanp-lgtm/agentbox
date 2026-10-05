@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   GATEWAY_LIMITS,
   type AiKeySummary,
+  type GatewayLogs,
   type KeyCheckResult,
   type MachineCreated,
 } from '@agentbox/shared';
-import { aiKey, auditLog, machine as machineTable } from '../src/db/schema.ts';
+import { aiKey, auditLog, gatewayUsage, machine as machineTable } from '../src/db/schema.ts';
 import { ANTHROPIC_OAUTH_BETA, cleanQuery, safePath } from '../src/gateway/relay.ts';
 import { renderMachineScript } from '../src/gateway/script.ts';
 import { addressRule, ipAllowed } from '../src/gateway/store.ts';
@@ -1041,6 +1042,137 @@ describe('logs', () => {
     await logged.close();
     expect(lines.some((l) => l.includes('/gw/gemini/v1beta/models/x:generateContent'))).toBe(true);
     expect(lines.join('')).not.toContain(pass);
+  });
+});
+
+describe('Logs screen', () => {
+  const logs = async (query = '') => {
+    const res = await laptop.get(`/api/gateway/logs${query}`);
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json<GatewayLogs>();
+  };
+
+  it('shows each machine, its address, its tokens and its requests', async () => {
+    const key = await addKey();
+    const a = await addMachine([key.id], { name: 'A6000' });
+    const b = await addMachine([key.id], { name: 'Office PC' });
+    const call = (pass: string, ip: string) =>
+      gw({
+        url: '/gw/anthropic/v1/messages',
+        headers: { 'x-api-key': pass },
+        payload: messages,
+        ip,
+      });
+    expect((await call(a.pass, MACHINE_IP)).statusCode).toBe(200);
+    expect((await call(a.pass, MACHINE_IP)).statusCode).toBe(200);
+    expect((await call(b.pass, '203.0.113.9')).statusCode).toBe(200);
+
+    const l = await logs();
+    expect(l.keepDays).toBe(7);
+    expect(l.totals).toMatchObject({
+      machines: 2,
+      connectedNow: 2,
+      usedInPeriod: 2,
+      requests: 3,
+      errors: 0,
+      inputTokens: 30,
+      outputTokens: 15,
+    });
+    // Most tokens first.
+    expect(l.machines.map((m) => m.name)).toEqual(['A6000', 'Office PC']);
+    expect(l.machines[0]).toMatchObject({
+      state: 'active',
+      connected: true,
+      lastIp: MACHINE_IP,
+      requests: 2,
+      inputTokens: 20,
+      outputTokens: 10,
+      topModel: 'claude-sonnet-4-5',
+    });
+    expect(l.rows).toHaveLength(3);
+    expect(l.rows[0]).toMatchObject({
+      machineName: 'Office PC',
+      ip: '203.0.113.9',
+      model: 'claude-sonnet-4-5',
+      status: 200,
+      inputTokens: 10,
+    });
+    expect(l.days).toHaveLength(7);
+    expect(l.days.at(-1)).toMatchObject({ requests: 3, inputTokens: 30, outputTokens: 15 });
+    expect(l.models[0]).toMatchObject({
+      model: 'claude-sonnet-4-5',
+      keySlug: 'anthropic',
+      requests: 3,
+    });
+
+    // A machine quiet for a while is no longer "connected".
+    h.clock.advance(6 * 60_000);
+    await h.signInWithPasskey(laptop);
+    expect((await logs()).totals.connectedNow).toBe(0);
+
+    // Filter by machine, and page through.
+    const onlyA = await logs(`?machineId=${a.machine.id}&limit=1`);
+    expect(onlyA.rows).toHaveLength(1);
+    expect(onlyA.rows[0]?.machineName).toBe('A6000');
+    expect(onlyA.nextBefore).not.toBeNull();
+    const next = await logs(
+      `?machineId=${a.machine.id}&limit=1&before=${encodeURIComponent(onlyA.nextBefore ?? '')}`,
+    );
+    expect(next.rows).toHaveLength(1);
+    expect(next.rows[0]?.id).not.toBe(onlyA.rows[0]?.id);
+    expect(next.nextBefore).toBeNull();
+  });
+
+  it('logs requests agentbox refused itself, once a minute per reason', async () => {
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id], { rpm: 1 });
+    const call = () =>
+      gw({ url: '/gw/anthropic/v1/messages', headers: { 'x-api-key': pass }, payload: messages });
+    expect((await call()).statusCode).toBe(200);
+    for (let i = 0; i < 5; i++) expect((await call()).statusCode).toBe(429);
+    const l = await logs('?errors=1');
+    expect(l.rows).toHaveLength(1);
+    expect(l.rows[0]).toMatchObject({ status: 429, machineId: machine.id, inputTokens: null });
+    expect(l.totals).toMatchObject({ requests: 2, errors: 1 });
+  });
+
+  it('marks stopped machines and shows only the last day when asked', async () => {
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id]);
+    await gw({
+      url: '/gw/anthropic/v1/messages',
+      headers: { 'x-api-key': pass },
+      payload: messages,
+    });
+    h.clock.advance(2 * DAY);
+    await h.signInWithPasskey(laptop);
+    h.services.gateway.revokeMachine(machine.id, 'test', '127.0.0.1');
+    const week = await logs();
+    expect(week.machines[0]).toMatchObject({ state: 'stopped', connected: false, requests: 1 });
+    const day = await logs('?period=24h');
+    expect(day.period).toBe('24h');
+    expect(day.totals.requests).toBe(0);
+    expect(day.rows).toHaveLength(0);
+  });
+
+  it('deletes request records older than 7 days', async () => {
+    const key = await addKey();
+    const { pass } = await addMachine([key.id]);
+    await gw({
+      url: '/gw/anthropic/v1/messages',
+      headers: { 'x-api-key': pass },
+      payload: messages,
+    });
+    h.clock.advance(6 * DAY);
+    expect(h.services.gateway.pruneUsage()).toBe(0);
+    h.clock.advance(DAY + 1000);
+    expect(h.services.gateway.pruneUsage()).toBe(1);
+    expect(h.services.db.select().from(gatewayUsage).all()).toHaveLength(0);
+  });
+
+  it('is only for signed-in devices', async () => {
+    const res = await h.app.inject({ method: 'GET', url: '/api/gateway/logs' });
+    expect(res.statusCode).toBe(401);
   });
 });
 

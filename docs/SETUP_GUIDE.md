@@ -106,7 +106,21 @@ In **Machines → AI keys**, each key has a **Test** button. agentbox asks that 
 
 Testing never uses a machine pass, so it works even before you set up any computer.
 
-## 6. If something goes wrong
+## 6. See what your computers are doing
+
+Open **Logs** in agentbox. It shows:
+
+- **Connected now:** computers that talked to agentbox in the last 5 minutes, and how many you have in all.
+- **Computers:** each one with its tokens (most first), requests, failed requests, the model it used most, and when and from which address it was last seen. Stopped and expired ones are marked.
+- **Tokens per day:** a bar for each of the last 7 days. Point at a bar for its numbers.
+- **Models:** which models used the most tokens.
+- **Requests:** every request, newest first: when, which computer and address, which key and model, the result, tokens and how long it took. Requests agentbox refused itself (a limit, a locked vault) show up too, once a minute per reason.
+
+Pick **Last 24 hours** or **Last 7 days**, one computer, or **Only requests that failed**. **CSV** downloads the requests shown. The page refreshes itself every 30 seconds.
+
+Logs hold only which computer, key and model, never what was asked or answered. agentbox deletes each record after 7 days by itself.
+
+## 7. If something goes wrong
 
 | Message                                          | What to do                                                                 |
 | ------------------------------------------------ | -------------------------------------------------------------------------- |

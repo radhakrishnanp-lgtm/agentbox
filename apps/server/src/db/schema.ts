@@ -311,6 +311,8 @@ export const gatewayUsage = sqliteTable(
     responseBytes: integer('response_bytes').notNull(),
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
+    /** The address the machine called from. */
+    ip: text('ip'),
   },
   (t) => [
     index('gateway_usage_machine_day').on(t.machineId, t.day),

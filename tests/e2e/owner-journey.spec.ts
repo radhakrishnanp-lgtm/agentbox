@@ -396,6 +396,28 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     ).toBeVisible();
     expect(await fromOther()).toContain('(127.0.0.2) is new for this machine');
 
+    // Logs: the computer, where it called from, and what it used.
+    await page
+      .getByRole('navigation', { name: 'Main' })
+      .first()
+      .getByRole('link', { name: 'Logs' })
+      .click();
+    await expect(page.getByRole('heading', { name: 'Logs', level: 1 })).toBeVisible();
+    await expect(
+      page.getByText('Kept for 7 days, then deleted by itself.', { exact: false }),
+    ).toBeVisible();
+    const computers = page.getByRole('img', { name: /^e2e-gpu-renamed: \d+ tokens$/ });
+    await expect(computers).toBeVisible();
+    await expect(page.getByRole('cell', { name: /127\.0\.0\.2/ }).first()).toBeVisible();
+    await expect(page.getByRole('cell', { name: /claude-sonnet-4-5/ }).first()).toBeVisible();
+    await shot(page, 'logs');
+    await page
+      .getByRole('navigation', { name: 'Main' })
+      .first()
+      .getByRole('link', { name: 'Machines' })
+      .click();
+    await expect(page.getByRole('heading', { name: 'Machines', level: 1 })).toBeVisible();
+
     // Stop, then delete: it is gone, and so is its pass.
     await page.getByRole('button', { name: 'Stop', exact: true }).click();
     await page.getByRole('button', { name: 'Stop machine' }).click();

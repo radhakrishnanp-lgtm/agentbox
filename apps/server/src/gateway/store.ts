@@ -12,7 +12,11 @@ import {
   GATEWAY_LIMITS,
   PASS_PREFIX,
   PROVIDER_PRESETS,
+  CONNECTED_WITHIN_MINUTES,
+  USAGE_KEEP_DAYS,
   type AiKeyCreate,
+  type GatewayLogs,
+  type LogsPeriod,
   type AiKeySummary,
   type KeyAuthStyle,
   type MachineSummary,
@@ -544,7 +548,7 @@ export class GatewayStore {
   }
 
   recentUsage(limit: number, machineId?: string) {
-    const since = this.#clock.now() - 30 * DAY;
+    const since = this.#clock.now() - USAGE_KEEP_DAYS * DAY;
     const where = machineId
       ? and(gte(gatewayUsage.ts, since), eq(gatewayUsage.machineId, machineId))
       : gte(gatewayUsage.ts, since);
@@ -557,12 +561,206 @@ export class GatewayStore {
       .all();
   }
 
-  /** Keeps 90 days of usage rows. */
-  pruneUsage(): void {
-    this.#db
+  /** What the Logs screen shows: who is connected, who used what, and each request. */
+  logs(opts: {
+    period: LogsPeriod;
+    machineId?: string | undefined;
+    errorsOnly?: boolean | undefined;
+    limit: number;
+    before?: string | undefined;
+  }): GatewayLogs {
+    const now = this.#clock.now();
+    const since = now - (opts.period === '24h' ? DAY : USAGE_KEEP_DAYS * DAY);
+    const machines = this.listMachines();
+    const names = new Map(machines.map((m) => [m.id, m.name]));
+    const inPeriod = gte(gatewayUsage.ts, since);
+    const isError = sql`${gatewayUsage.status} >= 400`;
+    const sums = {
+      requests: sql<number>`count(*)`,
+      errors: sql<number>`coalesce(sum(case when ${isError} then 1 else 0 end), 0)`,
+      inputTokens: sql<number>`coalesce(sum(${gatewayUsage.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${gatewayUsage.outputTokens}), 0)`,
+    };
+
+    const perMachine = new Map(
+      this.#db
+        .select({
+          machineId: gatewayUsage.machineId,
+          ...sums,
+          lastTs: sql<number>`max(${gatewayUsage.ts})`,
+        })
+        .from(gatewayUsage)
+        .where(inPeriod)
+        .groupBy(gatewayUsage.machineId)
+        .all()
+        .map((r) => [r.machineId, r]),
+    );
+    // The model each machine used most (by requests, then tokens).
+    const topModels = new Map<string, string>();
+    const modelRows = this.#db
+      .select({
+        machineId: gatewayUsage.machineId,
+        model: gatewayUsage.model,
+        requests: sql<number>`count(*)`,
+      })
+      .from(gatewayUsage)
+      .where(and(inPeriod, sql`${gatewayUsage.model} is not null`))
+      .groupBy(gatewayUsage.machineId, gatewayUsage.model)
+      .orderBy(sql`count(*) DESC`)
+      .all();
+    for (const r of modelRows) {
+      if (r.model && !topModels.has(r.machineId)) topModels.set(r.machineId, r.model);
+    }
+
+    const connectedSince = now - CONNECTED_WITHIN_MINUTES * 60_000;
+    const machineList = machines
+      .map((m) => {
+        const u = perMachine.get(m.id);
+        const state: 'active' | 'stopped' | 'expired' =
+          m.revokedAt !== null
+            ? 'stopped'
+            : m.expiresAt !== null && m.expiresAt <= now
+              ? 'expired'
+              : 'active';
+        return {
+          id: m.id,
+          name: m.name,
+          state,
+          connected: state === 'active' && m.lastSeenAt !== null && m.lastSeenAt >= connectedSince,
+          lastSeenAt: m.lastSeenAt === null ? null : iso(m.lastSeenAt),
+          lastIp: m.lastIp,
+          requests: u?.requests ?? 0,
+          errors: u?.errors ?? 0,
+          inputTokens: u?.inputTokens ?? 0,
+          outputTokens: u?.outputTokens ?? 0,
+          topModel: topModels.get(m.id) ?? null,
+          lastRequestAt: u ? iso(u.lastTs) : null,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens) ||
+          b.requests - a.requests ||
+          a.name.localeCompare(b.name),
+      );
+
+    // Always the whole week, so the chart doesn't change shape with the period.
+    const firstDay = dayOf(now) - (USAGE_KEEP_DAYS - 1);
+    const perDay = new Map(
+      this.#db
+        .select({ day: gatewayUsage.day, ...sums })
+        .from(gatewayUsage)
+        .where(gte(gatewayUsage.day, firstDay))
+        .groupBy(gatewayUsage.day)
+        .all()
+        .map((r) => [r.day, r]),
+    );
+    const days = Array.from({ length: USAGE_KEEP_DAYS }, (_, i) => {
+      const day = firstDay + i;
+      const r = perDay.get(day);
+      return {
+        day: new Date(day * DAY).toISOString().slice(0, 10),
+        requests: r?.requests ?? 0,
+        inputTokens: r?.inputTokens ?? 0,
+        outputTokens: r?.outputTokens ?? 0,
+      };
+    });
+
+    const models = this.#db
+      .select({
+        model: sql<string>`coalesce(${gatewayUsage.model}, '')`,
+        keySlug: gatewayUsage.keySlug,
+        requests: sums.requests,
+        inputTokens: sums.inputTokens,
+        outputTokens: sums.outputTokens,
+      })
+      .from(gatewayUsage)
+      .where(inPeriod)
+      .groupBy(sql`coalesce(${gatewayUsage.model}, '')`, gatewayUsage.keySlug)
+      .orderBy(
+        sql`coalesce(sum(${gatewayUsage.inputTokens}), 0) + coalesce(sum(${gatewayUsage.outputTokens}), 0) DESC`,
+        sql`count(*) DESC`,
+      )
+      .limit(10)
+      .all();
+
+    // The request list, newest first, a page at a time. The cursor is "<ts>.<id>".
+    const filters = [inPeriod];
+    if (opts.machineId) filters.push(eq(gatewayUsage.machineId, opts.machineId));
+    if (opts.errorsOnly) filters.push(isError);
+    const cursor = /^(\d{1,15})\.([A-Za-z0-9-]{1,64})$/.exec(opts.before ?? '');
+    if (cursor) {
+      const ts = Number(cursor[1]);
+      const id = cursor[2] ?? '';
+      filters.push(
+        sql`(${gatewayUsage.ts} < ${ts} OR (${gatewayUsage.ts} = ${ts} AND ${gatewayUsage.id} < ${id}))`,
+      );
+    }
+    const page = this.#db
+      .select()
+      .from(gatewayUsage)
+      .where(and(...filters))
+      .orderBy(sql`${gatewayUsage.ts} DESC`, sql`${gatewayUsage.id} DESC`)
+      .limit(opts.limit + 1)
+      .all();
+    const more = page.length > opts.limit;
+    const rows = page.slice(0, opts.limit);
+    const last = rows.at(-1);
+
+    const totals = machineList.reduce(
+      (t, m) => ({
+        machines: t.machines + 1,
+        connectedNow: t.connectedNow + (m.connected ? 1 : 0),
+        usedInPeriod: t.usedInPeriod + (m.requests > 0 ? 1 : 0),
+        requests: t.requests + m.requests,
+        errors: t.errors + m.errors,
+        inputTokens: t.inputTokens + m.inputTokens,
+        outputTokens: t.outputTokens + m.outputTokens,
+      }),
+      {
+        machines: 0,
+        connectedNow: 0,
+        usedInPeriod: 0,
+        requests: 0,
+        errors: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      },
+    );
+
+    return {
+      period: opts.period,
+      since: iso(since),
+      keepDays: USAGE_KEEP_DAYS,
+      totals,
+      machines: machineList,
+      days,
+      models: models.map((m) => ({ ...m, model: m.model || 'unknown' })),
+      rows: rows.map((r) => ({
+        id: r.id,
+        ts: iso(r.ts),
+        machineId: r.machineId,
+        machineName: names.get(r.machineId) ?? 'deleted machine',
+        keySlug: r.keySlug,
+        ip: r.ip,
+        method: r.method,
+        path: r.path,
+        model: r.model,
+        status: r.status,
+        durationMs: r.durationMs,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+      })),
+      nextBefore: more && last ? `${String(last.ts)}.${last.id}` : null,
+    };
+  }
+
+  /** Keeps a week of request records; older ones are deleted. Returns how many went. */
+  pruneUsage(): number {
+    return this.#db
       .delete(gatewayUsage)
-      .where(sql`${gatewayUsage.ts} < ${this.#clock.now() - 90 * DAY}`)
-      .run();
+      .where(sql`${gatewayUsage.ts} < ${this.#clock.now() - USAGE_KEEP_DAYS * DAY}`)
+      .run().changes;
   }
 }
 
