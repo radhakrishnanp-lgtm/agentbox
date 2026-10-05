@@ -694,6 +694,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
                 ts: started,
                 machineId: m.id,
                 machineName: m.name,
+                ip: request.ip,
                 keySlug: key.slug,
                 cli: key.cli,
                 model,
@@ -702,7 +703,10 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
                 inputTokens: usage.inputTokens,
                 outputTokens: usage.outputTokens,
                 steps: [...requestSteps(body), ...trace.finish(answer.type)],
-                ...requestContext(body),
+                // Read only when one of its switches is on.
+                ...(s.tracker.options().system || s.tracker.options().tools
+                  ? requestContext(body)
+                  : {}),
                 ...(({ read, write }) => ({ cacheReadTokens: read, cacheWriteTokens: write }))(
                   trace.cache(),
                 ),

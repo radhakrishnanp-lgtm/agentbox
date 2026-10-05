@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   TRACE_LIMITS,
   type TraceEntry,
+  type TraceFilterOptions,
   type TracePage,
   type TrackerStatus,
 } from '@agentbox/shared';
@@ -12,6 +13,13 @@ import { AppError } from '../lib/errors.ts';
 import type { Services } from '../services.ts';
 
 const idsSchema = z.union([z.literal('all'), z.array(z.uuid()).max(TRACE_LIMITS.maxEntries)]);
+const filterSchema = z.object({
+  machineId: z.uuid().optional(),
+  ip: z.string().min(1).max(64).optional(),
+  model: z.string().min(1).max(200).optional(),
+});
+/** Which entries: a list of ids, or "all" (narrowed by the filter, if one is given). */
+const pickSchema = z.object({ ids: idsSchema, filter: filterSchema.optional() });
 
 export function trackerRoutes(s: Services): FastifyPluginAsyncZod {
   return async (app) => {
@@ -24,20 +32,49 @@ export function trackerRoutes(s: Services): FastifyPluginAsyncZod {
       async (): Promise<TrackerStatus> => s.tracker.status(),
     );
 
-    // Turning it on starts saving prompts and answers, so it needs a fresh check.
+    // Turning anything on starts saving more, so it needs a fresh check; turning off doesn't.
     app.put(
       '/api/tracker',
       {
-        schema: { body: z.object({ enabled: z.boolean() }) },
+        schema: {
+          body: z
+            .object({
+              enabled: z.boolean().optional(),
+              system: z.boolean().optional(),
+              tools: z.boolean().optional(),
+            })
+            .refine((b) => Object.keys(b).length > 0, 'Nothing to change.'),
+        },
         preHandler: async (request, reply) => {
-          const body = request.body as { enabled?: unknown } | undefined;
-          return body?.enabled === true
+          const body = request.body as Record<string, unknown>;
+          return Object.values(body).includes(true)
             ? requireFreshAuth.call(app, request, reply)
             : requireSession().call(app, request, reply);
         },
       },
-      async (request): Promise<TrackerStatus> =>
-        s.tracker.setEnabled(request.body.enabled, actor(request), request.ip),
+      async (request): Promise<TrackerStatus> => {
+        const { enabled, system, tools } = request.body;
+        let status = s.tracker.status();
+        if (system !== undefined || tools !== undefined) {
+          status = s.tracker.setOptions(
+            {
+              ...(system === undefined ? {} : { system }),
+              ...(tools === undefined ? {} : { tools }),
+            },
+            actor(request),
+            request.ip,
+          );
+        }
+        if (enabled !== undefined)
+          status = s.tracker.setEnabled(enabled, actor(request), request.ip);
+        return status;
+      },
+    );
+
+    app.get(
+      '/api/tracker/filters',
+      { preHandler: requireSession({ passive: true }) },
+      async (): Promise<TraceFilterOptions> => s.tracker.filterOptions(),
     );
 
     app.get(
@@ -48,6 +85,8 @@ export function trackerRoutes(s: Services): FastifyPluginAsyncZod {
             limit: z.coerce.number().int().min(1).max(200).default(50),
             before: z.string().max(100).optional(),
             machineId: z.uuid().optional(),
+            ip: z.string().min(1).max(64).optional(),
+            model: z.string().min(1).max(200).optional(),
           }),
         },
         preHandler: requireSession({ passive: true }),
@@ -83,9 +122,14 @@ export function trackerRoutes(s: Services): FastifyPluginAsyncZod {
 
     app.post(
       '/api/tracker/delete',
-      { schema: { body: z.object({ ids: idsSchema }) }, preHandler: requireSession() },
+      { schema: { body: pickSchema }, preHandler: requireSession() },
       async (request): Promise<{ deleted: number }> => ({
-        deleted: s.tracker.delete(request.body.ids, actor(request), request.ip),
+        deleted: s.tracker.delete(
+          request.body.ids,
+          actor(request),
+          request.ip,
+          request.body.filter,
+        ),
       }),
     );
 
@@ -93,12 +137,12 @@ export function trackerRoutes(s: Services): FastifyPluginAsyncZod {
     app.post(
       '/api/tracker/export',
       {
-        schema: { body: z.object({ ids: idsSchema }) },
+        schema: { body: pickSchema },
         preHandler: requireFreshAuth,
         config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
       },
       async (request): Promise<{ csv: string; entries: number }> =>
-        s.tracker.exportCsv(request.body.ids, actor(request), request.ip),
+        s.tracker.exportCsv(request.body.ids, actor(request), request.ip, request.body.filter),
     );
   };
 }

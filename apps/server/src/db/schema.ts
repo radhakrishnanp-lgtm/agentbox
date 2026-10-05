@@ -333,6 +333,8 @@ export const agentTrace = sqliteTable(
     /** Kept when the machine is deleted; the name is copied for that reason. */
     machineId: text('machine_id').notNull(),
     machineName: text('machine_name').notNull(),
+    /** The address the computer called from. */
+    ip: text('ip'),
     keySlug: text('key_slug').notNull(),
     cli: text('cli'),
     model: text('model'),

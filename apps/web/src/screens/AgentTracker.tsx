@@ -1,12 +1,14 @@
 import type {
   TraceEntry,
+  TraceFilter,
+  TraceFilterOptions,
   TracePage,
   TraceStepType,
   TraceSummary,
   TraceTool,
   TrackerStatus,
 } from '@agentbox/shared';
-import { Download, Eye, EyeOff, Radar, RefreshCw, Trash2 } from 'lucide-react';
+import { Download, Eye, EyeOff, Radar, RefreshCw, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { PageHeader } from '../components/Layout.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -56,6 +58,88 @@ function saveCsv(csv: string, name: string) {
 
 type Pending = { kind: 'delete'; ids: string[] | 'all'; label: string } | null;
 
+const FILTER_KEY = 'agentbox.tracker.filter';
+
+function savedFilter(): TraceFilter {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(FILTER_KEY) ?? '{}') as Record<string, unknown>;
+    const f: TraceFilter = {};
+    if (typeof v['machineId'] === 'string') f.machineId = v['machineId'];
+    if (typeof v['ip'] === 'string') f.ip = v['ip'];
+    if (typeof v['model'] === 'string') f.model = v['model'];
+    return f;
+  } catch {
+    return {};
+  }
+}
+
+/** The filter with one value changed; an empty value removes it. */
+function withValue(f: TraceFilter, key: keyof TraceFilter, value: string): TraceFilter {
+  const next: TraceFilter = {};
+  for (const k of ['machineId', 'ip', 'model'] as const) {
+    const v = k === key ? value : f[k];
+    if (v) next[k] = v;
+  }
+  return next;
+}
+
+function query(f: TraceFilter): string {
+  const p = new URLSearchParams();
+  if (f.machineId) p.set('machineId', f.machineId);
+  if (f.ip) p.set('ip', f.ip);
+  if (f.model) p.set('model', f.model);
+  const q = p.toString();
+  return q ? `&${q}` : '';
+}
+
+const selectClass =
+  'block min-h-11 w-full rounded-[var(--radius-input)] border border-border bg-bg px-3 text-base focus-visible:outline-2';
+
+/** An on/off switch with its label and a line of help. */
+function Toggle({
+  label,
+  help,
+  on,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  help: string;
+  on: boolean;
+  disabled?: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-text">{label}</p>
+        <p className="text-sm text-muted">{help}</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => {
+          onChange(!on);
+        }}
+        className={cn(
+          'relative mt-1 inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-border transition-colors focus-visible:outline-2 disabled:opacity-50',
+          on ? 'bg-[var(--accent)]' : 'bg-surface-2',
+        )}
+      >
+        <span
+          className={cn(
+            'inline-block size-5 rounded-full bg-white shadow transition-transform',
+            on ? 'translate-x-6' : 'translate-x-1',
+          )}
+        />
+      </button>
+    </div>
+  );
+}
+
 export function AgentTracker({ tabs }: { tabs: ReactNode }) {
   const { setSession } = useAuth();
   const [status, setStatus] = useState<TrackerStatus | null>(null);
@@ -67,15 +151,33 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending>(null);
+  const [filter, setFilterState] = useState<TraceFilter>(savedFilter);
+  const [options, setOptions] = useState<TraceFilterOptions | null>(null);
+  const filtered = Boolean(filter.machineId ?? filter.ip ?? filter.model);
+
+  const setFilter = (f: TraceFilter) => {
+    setFilterState(f);
+    setEntries(null);
+    setNext(null);
+    setSelected(new Set());
+    setOpen(null);
+    try {
+      sessionStorage.setItem(FILTER_KEY, JSON.stringify(f));
+    } catch {
+      // Remembering the filter is only a convenience.
+    }
+  };
 
   const fetchFirst = useCallback(
     () =>
       Promise.all([
         api<TrackerStatus>('/api/tracker'),
-        api<TracePage>('/api/tracker/entries?limit=50'),
+        api<TracePage>(`/api/tracker/entries?limit=50${query(filter)}`),
+        api<TraceFilterOptions>('/api/tracker/filters'),
       ])
-        .then(([st, page]) => {
+        .then(([st, page, opts]) => {
           setStatus(st);
+          setOptions(opts);
           // Keep older pages you opened; put new entries on top.
           setEntries((prev) => {
             if (!prev) return page.entries;
@@ -92,7 +194,7 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
         .catch((err: unknown) => {
           setError(errorMessage(err));
         }),
-    [],
+    [filter],
   );
 
   useEffect(() => {
@@ -117,7 +219,9 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
   const loadMore = () => {
     if (!next) return;
     setBusy('more');
-    api<TracePage>(`/api/tracker/entries?limit=50&before=${encodeURIComponent(next)}`)
+    api<TracePage>(
+      `/api/tracker/entries?limit=50&before=${encodeURIComponent(next)}${query(filter)}`,
+    )
       .then((page) => {
         setEntries((prev) => [...(prev ?? []), ...page.entries]);
         setNext(page.nextBefore);
@@ -151,10 +255,29 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
       });
   };
 
+  const setSwitch = (name: 'system' | 'tools', on: boolean) => {
+    setBusy(name);
+    setNotice(null);
+    const send = () => api<TrackerStatus>('/api/tracker', { method: 'PUT', body: { [name]: on } });
+    (on ? withFreshAuth(send, setSession) : send())
+      .then((st) => {
+        setStatus(st);
+      })
+      .catch((err: unknown) => {
+        if (!(err instanceof FreshAuthCancelled)) setError(errorMessage(err));
+      })
+      .finally(() => {
+        setBusy(null);
+      });
+  };
+
+  // "All" means all that match the filter, when one is set.
+  const pick = (ids: string[] | 'all') => (ids === 'all' && filtered ? { ids, filter } : { ids });
+
   const exportCsv = (ids: string[] | 'all') => {
     setBusy('export');
     withFreshAuth(
-      () => post<{ csv: string; entries: number }>('/api/tracker/export', { ids }),
+      () => post<{ csv: string; entries: number }>('/api/tracker/export', pick(ids)),
       setSession,
     )
       .then(({ csv, entries: n }) => {
@@ -171,7 +294,7 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
 
   const remove = (ids: string[] | 'all') => {
     setBusy('delete');
-    post<{ deleted: number }>('/api/tracker/delete', { ids })
+    post<{ deleted: number }>('/api/tracker/delete', pick(ids))
       .then(({ deleted }) => {
         setNotice(`Deleted ${String(deleted)} ${deleted === 1 ? 'entry' : 'entries'}.`);
         setSelected(new Set());
@@ -255,6 +378,92 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
             {status ? `${status.entries.toLocaleString()} saved` : '…'} · keeps the newest{' '}
             {(status?.maxEntries ?? 20000).toLocaleString()}. Turning it off keeps what was saved.
           </p>
+          <div className="divide-y divide-border border-t border-border pt-2">
+            <Toggle
+              label="Save system prompts"
+              help="The instructions each CLI gives the model. Off: not saved."
+              on={status?.system ?? false}
+              disabled={!status || busy === 'system'}
+              onChange={(on) => {
+                setSwitch('system', on);
+              }}
+            />
+            <Toggle
+              label="Save tools and MCP servers"
+              help="Every tool the CLI offers the model, grouped by MCP server. Off: not saved. Commands and MCP calls the agent makes are always saved."
+              on={status?.tools ?? false}
+              disabled={!status || busy === 'tools'}
+              onChange={(on) => {
+                setSwitch('tools', on);
+              }}
+            />
+          </div>
+        </CardBody>
+      </Card>
+
+      <Card className="mb-4">
+        <CardBody className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium">Computer</span>
+            <select
+              className={selectClass}
+              value={filter.machineId ?? ''}
+              onChange={(e) => {
+                setFilter(withValue(filter, 'machineId', e.target.value));
+              }}
+            >
+              <option value="">All computers</option>
+              {options?.machines.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium">Address</span>
+            <select
+              className={selectClass}
+              value={filter.ip ?? ''}
+              onChange={(e) => {
+                setFilter(withValue(filter, 'ip', e.target.value));
+              }}
+            >
+              <option value="">All addresses</option>
+              {options?.ips.map((ip) => (
+                <option key={ip} value={ip}>
+                  {ip}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium">Model</span>
+            <select
+              className={selectClass}
+              value={filter.model ?? ''}
+              onChange={(e) => {
+                setFilter(withValue(filter, 'model', e.target.value));
+              }}
+            >
+              <option value="">All models</option>
+              {options?.models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Button
+            variant="ghost"
+            disabled={!filtered}
+            onClick={() => {
+              setFilter({});
+            }}
+          >
+            <X className="size-4" aria-hidden />
+            Clear filters
+          </Button>
         </CardBody>
       </Card>
 
@@ -311,25 +520,29 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
           <span className="ml-auto flex flex-wrap gap-2">
             <Button
               variant="ghost"
-              disabled={!status?.entries}
+              disabled={filtered ? list.length === 0 : !status?.entries}
               loading={busy === 'export' && selected.size === 0}
               onClick={() => {
                 exportCsv('all');
               }}
             >
               <Download className="size-4" aria-hidden />
-              Export all
+              {filtered ? 'Export all matching' : 'Export all'}
             </Button>
             <Button
               variant="ghost"
               className="text-danger"
-              disabled={!status?.entries}
+              disabled={filtered ? list.length === 0 : !status?.entries}
               onClick={() => {
-                setPending({ kind: 'delete', ids: 'all', label: 'every saved entry' });
+                setPending({
+                  kind: 'delete',
+                  ids: 'all',
+                  label: filtered ? 'every entry that matches the filters' : 'every saved entry',
+                });
               }}
             >
               <Trash2 className="size-4" aria-hidden />
-              Delete all
+              {filtered ? 'Delete all matching' : 'Delete all'}
             </Button>
           </span>
         </div>
@@ -342,9 +555,11 @@ export function AgentTracker({ tabs }: { tabs: ReactNode }) {
           </div>
         ) : list.length === 0 ? (
           <EmptyState icon={<Radar className="size-8" aria-hidden />} title="Nothing saved yet">
-            {status?.enabled
-              ? 'Use an AI CLI on one of your computers; its steps show up here within seconds.'
-              : 'Turn the agent tracker on, then use an AI CLI on one of your computers.'}
+            {filtered
+              ? 'Nothing matches these filters.'
+              : status?.enabled
+                ? 'Use an AI CLI on one of your computers; its steps show up here within seconds.'
+                : 'Turn the agent tracker on, then use an AI CLI on one of your computers.'}
           </EmptyState>
         ) : (
           <ul className="divide-y divide-border">
@@ -447,6 +662,7 @@ function EntryRow({
         >
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
             <span className="font-medium">{e.machineName}</span>
+            {e.ip ? <span className="font-mono text-xs text-muted">{e.ip}</span> : null}
             <span className="text-muted">
               {e.cli ?? e.keySlug}
               {e.model ? ` · ${e.model}` : ''}

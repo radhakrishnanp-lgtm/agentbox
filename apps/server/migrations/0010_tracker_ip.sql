@@ -1,0 +1,1 @@
+ALTER TABLE `agent_trace` ADD `ip` text;

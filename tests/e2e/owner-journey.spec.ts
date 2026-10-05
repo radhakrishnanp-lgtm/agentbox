@@ -417,12 +417,21 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await expect(page.getByRole('heading', { name: 'Agent tracker is off' })).toBeVisible();
     await page.getByRole('button', { name: 'Turn on' }).click();
     await expect(page.getByRole('heading', { name: 'Agent tracker is on' })).toBeVisible();
+    // System prompts and tool lists are saved only when their switches are on (off by default).
+    const systemSwitch = page.getByRole('switch', { name: 'Save system prompts' });
+    const toolsSwitch = page.getByRole('switch', { name: 'Save tools and MCP servers' });
+    await expect(systemSwitch).toHaveAttribute('aria-checked', 'false');
+    await expect(toolsSwitch).toHaveAttribute('aria-checked', 'false');
+    await systemSwitch.click();
+    await expect(systemSwitch).toHaveAttribute('aria-checked', 'true');
+    await toolsSwitch.click();
+    await expect(toolsSwitch).toHaveAttribute('aria-checked', 'true');
     expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
       'Hello from the fake provider',
     );
     await page.getByRole('button', { name: 'Refresh' }).click();
     const traced = page.getByRole('button', {
-      name: /e2e-gpu-renamed claude .* hi 1 prompt 1 answer/,
+      name: /e2e-gpu-renamed 127\.0\.0\.1 claude .* hi 1 prompt 1 answer/,
     });
     await expect(traced).toBeVisible();
     await traced.click();
@@ -436,6 +445,13 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await page.getByRole('button', { name: 'Save note' }).click();
     await expect(page.getByText('Note: first trace')).toBeVisible();
     await shot(page, 'agent-tracker');
+    // Filters: by model, and one that matches nothing.
+    await page.getByRole('combobox', { name: 'Model' }).selectOption('claude-sonnet-4-5');
+    await expect(traced).toBeVisible();
+    await page.getByRole('combobox', { name: 'Address' }).selectOption({ index: 1 });
+    await expect(traced).toBeVisible();
+    await page.getByRole('button', { name: 'Clear filters' }).click();
+    await expect(page.getByRole('combobox', { name: 'Model' })).toHaveValue('');
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Export all' }).click();
     expect((await download).suggestedFilename()).toMatch(/^agentbox-agent-tracker-.*\.csv$/);

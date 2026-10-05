@@ -30,6 +30,7 @@ const LABELS: Record<string, string> = {
   'ai_key.tested': 'AI key tested',
   'tracker.enabled': 'Agent tracker turned on',
   'tracker.disabled': 'Agent tracker turned off',
+  'tracker.options': 'Agent tracker settings changed',
   'tracker.deleted': 'Agent tracker entries deleted',
   'tracker.exported': 'Agent tracker entries exported',
   'machine.added': 'Machine added',
