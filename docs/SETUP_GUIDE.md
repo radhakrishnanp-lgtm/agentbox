@@ -125,18 +125,20 @@ The **Usage** tab holds only which computer, key and model, never what was asked
 The **Agent tracker** tab in **Logs** saves what the AI agents on your computers actually do. For each request it keeps:
 
 - **Prompt:** what you typed.
-- **Thinking:** the model's reasoning, when the provider sends it.
+- **Thinking:** the model's reasoning. Newer Claude models leave it out unless asked, so while the tracker is on agentbox asks for a readable summary of it (Claude), a reasoning summary (Codex) or the thoughts (Gemini). Grok and Kimi send theirs anyway. If a provider refuses that setting, agentbox sends the request unchanged and stops asking that key.
 - **Command:** shell commands the agent runs (bash, shell, exec_command and the like).
 - **MCP:** calls to MCP tools, shown as "server · tool" with their input.
 - **Tool** and **Result:** other tool calls (read a file, edit a file …) and what they returned.
 - **Answer:** the model's reply.
+- **System prompt** and **Tools:** the instructions the CLI gave the model, and every tool it offered, grouped by MCP server. Each different one is saved once, so a long system prompt doesn't fill the disk.
+- **Cache:** how many input tokens came from the provider's prompt cache.
 
 It reads what passes through agentbox, so it works for claude, codex, grok, kimi and gemini on every computer with nothing new to install.
 
 - It is **off** by default. **Turn on** asks for your passkey or authenticator code. **Turn off** stops saving but keeps what was saved.
 - What it saves is encrypted on agentbox and kept until you delete it. It keeps the newest 20,000 entries and drops older ones.
 - Open an entry to see its steps in order and add a **note**.
-- Tick entries, or **Select all**, then **Export selected** or **Delete selected**. **Export all** and **Delete all** cover every saved entry. Exports are CSV files with one row per step and also ask for your passkey or code.
+- Tick entries, or **Select all**, then **Export selected** or **Delete selected**. **Export all** and **Delete all** cover every saved entry. Exports are CSV files with one row per step (the system prompt and tool list in full the first time, then "same as entry …") and also ask for your passkey or code.
 - New entries show up by themselves every 10 seconds while the page is open.
 
 Prompts and answers can hold secrets you pasted into a CLI. Turn the tracker on when you need it, and delete what you no longer need.

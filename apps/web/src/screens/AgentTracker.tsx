@@ -3,6 +3,7 @@ import type {
   TracePage,
   TraceStepType,
   TraceSummary,
+  TraceTool,
   TrackerStatus,
 } from '@agentbox/shared';
 import { Download, Eye, EyeOff, Radar, RefreshCw, Trash2 } from 'lucide-react';
@@ -14,7 +15,7 @@ import { ConfirmDialog } from '../components/ui/dialog.tsx';
 import { Alert, Badge, EmptyState, Skeleton } from '../components/ui/feedback.tsx';
 import { api, errorMessage, post } from '../lib/api.ts';
 import { cn } from '../lib/cn.ts';
-import { dateTime, relativeTime } from '../lib/format.ts';
+import { agoTime, dateTime } from '../lib/format.ts';
 import { FreshAuthCancelled, withFreshAuth } from '../lib/fresh-auth.ts';
 import { useAuth } from '../state/auth.tsx';
 
@@ -431,7 +432,7 @@ function EntryRow({
       <div className="flex items-start gap-3">
         <input
           type="checkbox"
-          aria-label={`Select entry from ${e.machineName}, ${relativeTime(e.ts)}`}
+          aria-label={`Select entry from ${e.machineName}, ${agoTime(e.ts)}`}
           className="mt-1.5 size-4 shrink-0 accent-[var(--accent)]"
           checked={checked}
           onChange={(ev) => {
@@ -453,9 +454,10 @@ function EntryRow({
             {e.status >= 400 ? <Badge tone="danger">Error {e.status}</Badge> : null}
             <span className="ml-auto whitespace-nowrap text-xs text-muted">
               <time dateTime={e.ts} title={dateTime(e.ts)}>
-                {relativeTime(e.ts)}
+                {agoTime(e.ts)}
               </time>
               {tokens > 0 ? ` · ${tokens.toLocaleString()} tokens` : ''}
+              {e.cacheReadTokens ? ` (${e.cacheReadTokens.toLocaleString()} from cache)` : ''}
             </span>
           </div>
           <p className="mt-1 line-clamp-2 break-words text-sm">{e.preview || '(no text)'}</p>
@@ -465,6 +467,13 @@ function EntryRow({
                 {e.counts[t]} {STEP[t].label.toLowerCase()}
               </Badge>
             ))}
+            {e.hasSystem ? <Badge>system prompt</Badge> : null}
+            {e.toolCount ? (
+              <Badge>
+                {e.toolCount} {e.toolCount === 1 ? 'tool' : 'tools'}
+                {e.mcpToolCount ? ` · ${String(e.mcpToolCount)} MCP` : ''}
+              </Badge>
+            ) : null}
             {e.note ? <Badge>Note: {e.note}</Badge> : null}
           </div>
         </button>
@@ -536,6 +545,7 @@ function EntryDetail({
     <div className="mt-3 space-y-3 pl-7">
       {error ? <Alert tone="danger">{error}</Alert> : null}
       {entry === null && !error ? <Skeleton className="h-24 w-full" /> : null}
+      {entry ? <Context entry={entry} /> : null}
       {entry ? (
         <ol className="space-y-2">
           {entry.steps.map((s, i) => (
@@ -554,7 +564,10 @@ function EntryDetail({
                     'font-mono text-xs',
                 )}
               >
-                {s.text}
+                {s.text ||
+                  (s.type === 'thinking'
+                    ? "(empty: the provider didn't send the thinking text for this request)"
+                    : '')}
               </pre>
             </li>
           ))}
@@ -589,5 +602,91 @@ function EntryDetail({
         </Button>
       </div>
     </div>
+  );
+}
+
+const summaryClass =
+  'flex min-h-11 cursor-pointer items-center gap-2 px-3 text-sm font-medium select-none';
+
+/** The system prompt and the tools the agent gave the model, folded away. */
+function Context({ entry }: { entry: TraceEntry }) {
+  if (!entry.system && entry.tools.length === 0) return null;
+  const mcp = new Map<string, TraceTool[]>();
+  const other: TraceTool[] = [];
+  for (const t of entry.tools) {
+    if (t.kind === 'mcp') {
+      const k = t.server ?? '';
+      mcp.set(k, [...(mcp.get(k) ?? []), t]);
+    } else other.push(t);
+  }
+  return (
+    <div className="space-y-2">
+      {entry.system ? (
+        <details className="rounded-[var(--radius-input)] border border-border bg-bg">
+          <summary className={summaryClass}>
+            <Badge>System prompt</Badge>
+            <span className="text-muted">{entry.system.length.toLocaleString()} characters</span>
+          </summary>
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words border-t border-border p-3 font-sans text-sm">
+            {entry.system}
+          </pre>
+        </details>
+      ) : null}
+      {entry.tools.length > 0 ? (
+        <details className="rounded-[var(--radius-input)] border border-border bg-bg">
+          <summary className={summaryClass}>
+            <Badge tone="warning">Tools</Badge>
+            <span className="text-muted">
+              {entry.tools.length} offered
+              {mcp.size > 0
+                ? ` · MCP: ${[...mcp.keys()].map((k) => k || 'unnamed').join(', ')}`
+                : ''}
+            </span>
+          </summary>
+          <div className="space-y-3 border-t border-border p-3">
+            {[...mcp.entries()].map(([server, tools]) => (
+              <ToolGroup
+                key={`mcp:${server}`}
+                title={`MCP server “${server || 'unnamed'}”`}
+                tools={tools}
+              />
+            ))}
+            {other.length > 0 ? <ToolGroup title="Built-in tools" tools={other} /> : null}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function ToolGroup({ title, tools }: { title: string; tools: TraceTool[] }) {
+  return (
+    <section>
+      <h4 className="mb-1 text-xs font-semibold text-muted">
+        {title} ({tools.length})
+      </h4>
+      <ul className="space-y-1">
+        {tools.map((t, i) => (
+          <li key={`${t.name}:${String(i)}`}>
+            <details>
+              <summary className="cursor-pointer py-1 text-sm">
+                <span className="font-mono">{t.name}</span>
+                {t.description ? (
+                  <span className="text-muted">
+                    {' '}
+                    · {t.description.split('\n')[0]?.slice(0, 120)}
+                  </span>
+                ) : null}
+              </summary>
+              <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-input)] bg-surface p-2 font-mono text-xs">
+                {[t.description, t.schema ? `Input:\n${t.schema}` : '']
+                  .filter(Boolean)
+                  .join('\n\n') || '(no description)'}
+              </pre>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

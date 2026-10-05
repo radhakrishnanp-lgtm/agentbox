@@ -7,7 +7,7 @@ import { Card, CardBody, CardHeader } from '../components/ui/card.tsx';
 import { Alert, Badge, EmptyState, Skeleton } from '../components/ui/feedback.tsx';
 import { api, errorMessage } from '../lib/api.ts';
 import { cn } from '../lib/cn.ts';
-import { dateTime, relativeTime } from '../lib/format.ts';
+import { agoTime, dateTime } from '../lib/format.ts';
 import { AgentTracker } from './AgentTracker.tsx';
 
 /** How often the screen fetches fresh numbers while it is open. */
@@ -412,7 +412,7 @@ function MachinesCard({ machines, period }: { machines: LogsMachine[]; period: L
                 {' · last seen '}
                 {m.lastSeenAt ? (
                   <time dateTime={m.lastSeenAt} title={dateTime(m.lastSeenAt)}>
-                    {relativeTime(m.lastSeenAt)}
+                    {agoTime(m.lastSeenAt)}
                   </time>
                 ) : (
                   'never'
@@ -545,7 +545,7 @@ function RequestTable({ rows }: { rows: LogsRow[] }) {
               <tr key={r.id} className="align-top">
                 <td className="whitespace-nowrap px-5 py-2">
                   <time dateTime={r.ts} title={dateTime(r.ts)}>
-                    {relativeTime(r.ts)}
+                    {agoTime(r.ts)}
                   </time>
                 </td>
                 <td className="px-3 py-2">

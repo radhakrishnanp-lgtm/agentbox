@@ -35,7 +35,7 @@ function makeMachine() {
       'curl -sS -X POST "$ANTHROPIC_BASE_URL/v1/messages" \\',
       '  -H "authorization: Bearer $ANTHROPIC_AUTH_TOKEN" -H "content-type: application/json" \\',
       '  -H "anthropic-version: 2023-06-01" \\',
-      `  -d '{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'`,
+      `  -d '{"model":"claude-sonnet-4-5","max_tokens":16,"system":"You are the e2e CLI.","tools":[{"name":"mcp__docs__search","description":"Search the docs","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}'`,
       '',
     ].join('\n'),
   );
@@ -427,6 +427,11 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await expect(traced).toBeVisible();
     await traced.click();
     await expect(page.getByText('Hello from the fake provider').first()).toBeVisible();
+    // The system prompt and the MCP tools the CLI offered are saved too.
+    await page.getByText('System prompt', { exact: true }).click();
+    await expect(page.getByText('You are the e2e CLI.')).toBeVisible();
+    await page.getByText('1 offered · MCP: docs').click();
+    await expect(page.getByText('MCP server “docs” (1)')).toBeVisible();
     await page.getByLabel('Note', { exact: true }).fill('first trace');
     await page.getByRole('button', { name: 'Save note' }).click();
     await expect(page.getByText('Note: first trace')).toBeVisible();

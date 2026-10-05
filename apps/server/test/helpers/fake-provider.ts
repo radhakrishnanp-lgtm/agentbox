@@ -23,6 +23,8 @@ export class FakeProvider {
   refuse: { status: number; body: unknown } | null = null;
   /** When set, /v1/messages answers with this raw event stream instead. */
   sse: string | null = null;
+  /** When set, /v1/messages refuses requests that ask for thinking.display (like a provider that doesn't know it). */
+  rejectDisplay = false;
   #server: Server;
   url = '';
 
@@ -48,6 +50,16 @@ export class FakeProvider {
           });
           res.end(JSON.stringify(value));
         };
+        if (path === '/v1/messages' && this.rejectDisplay && body.includes('"display"')) {
+          json(400, {
+            type: 'error',
+            error: {
+              type: 'invalid_request_error',
+              message: 'thinking.display: Extra inputs are not permitted',
+            },
+          });
+          return;
+        }
         if (path === '/v1/messages' && this.sse !== null) {
           res.writeHead(200, { 'content-type': 'text/event-stream' });
           res.end(this.sse);

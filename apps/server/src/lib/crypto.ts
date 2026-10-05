@@ -6,6 +6,7 @@ import {
   createCipheriv,
   createDecipheriv,
   createHash,
+  createHmac,
   randomBytes,
   scrypt as scryptCb,
   timingSafeEqual,
@@ -113,6 +114,16 @@ export class SecretBox {
       decipher.update(Buffer.from(ctB64, 'base64url')),
       decipher.final(),
     ]).toString('utf8');
+  }
+
+  /** A keyed hash (HMAC-SHA256) of `data`: equal inputs match, but it reveals nothing without the key. */
+  mac(data: string, context: string): string {
+    const key = this.#keys.get(this.#currentId);
+    if (!key) throw new Error('Current key missing');
+    return createHmac('sha256', key)
+      .update(`${context}\0`)
+      .update(data, 'utf8')
+      .digest('base64url');
   }
 
   /** True when a value was encrypted with an older key and should be re-encrypted. */

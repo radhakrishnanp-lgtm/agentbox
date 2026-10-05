@@ -446,6 +446,14 @@ export interface TraceSummary {
   durationMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** Input tokens the provider read from its prompt cache, and wrote to it. */
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  /** Tools the agent offered the model, and how many of them came from MCP servers. */
+  toolCount: number;
+  mcpToolCount: number;
+  /** Whether the system prompt was saved with this entry. */
+  hasSystem: boolean;
   counts: Partial<Record<TraceStepType, number>>;
   /** The start of the prompt (or first step), to recognise the entry. */
   preview: string;
@@ -457,13 +465,32 @@ export interface TracePage {
   nextBefore: string | null;
 }
 
+/** A tool the agent offered the model. */
+export interface TraceTool {
+  name: string;
+  /** "mcp" for tools from an MCP server, "server" for the provider's own (web search …). */
+  kind: 'tool' | 'mcp' | 'server';
+  /** The MCP server, for MCP tools. */
+  server?: string;
+  description: string;
+  /** The tool's input schema as JSON, when it has one. */
+  schema?: string;
+}
+
 export interface TraceEntry extends TraceSummary {
   steps: TraceStep[];
+  /** The system prompt (instructions) the agent sent, or null if none was saved. */
+  system: string | null;
+  tools: TraceTool[];
 }
 
 export const TRACE_LIMITS = {
   noteMax: 500,
   stepTextMax: 20_000,
+  /** System prompts and tool lists are saved once and shared by the entries that use them. */
+  systemMax: 400_000,
+  toolsMax: 500,
+  toolDescriptionMax: 20_000,
   stepsMax: 300,
   maxEntries: 20_000,
 } as const;

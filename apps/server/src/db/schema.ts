@@ -340,6 +340,13 @@ export const agentTrace = sqliteTable(
     durationMs: integer('duration_ms').notNull(),
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
+    cacheReadTokens: integer('cache_read_tokens'),
+    cacheWriteTokens: integer('cache_write_tokens'),
+    /** The system prompt and tool list, saved once in agent_trace_blob. */
+    systemHash: text('system_hash'),
+    toolsHash: text('tools_hash'),
+    toolCount: integer('tool_count').notNull().default(0),
+    mcpToolCount: integer('mcp_tool_count').notNull().default(0),
     /** How many steps of each kind, e.g. {"prompt":1,"command":2}. */
     counts: text('counts', { mode: 'json' }).$type<Record<string, number>>().notNull(),
     /** AES-256-GCM: the JSON list of steps. */
@@ -349,3 +356,15 @@ export const agentTrace = sqliteTable(
   },
   (t) => [index('agent_trace_ts').on(t.ts), index('agent_trace_machine').on(t.machineId, t.ts)],
 );
+
+/**
+ * System prompts and tool lists of agent tracker entries. Agents send the same
+ * ones with every request, so each is saved once, keyed by a hash of its text.
+ */
+export const agentTraceBlob = sqliteTable('agent_trace_blob', {
+  /** HMAC of the plain text, so equal texts share a row without revealing them. */
+  hash: text('hash').primaryKey(),
+  /** AES-256-GCM: the text (a system prompt, or the JSON tool list). */
+  enc: text('enc').notNull(),
+  createdAt: integer('created_at').notNull(),
+});
