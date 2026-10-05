@@ -39,6 +39,8 @@ Keep your AI keys on agentbox only, and still type `claude`, `codex`, `grok`, `k
 
 4. Open a new terminal and use the CLIs as usual. On Windows that can be PowerShell or the Command Prompt. If a CLI isn't installed yet, install it the normal way; it uses agentbox automatically.
 
+If a CLI still shows its own sign-in screen, the PATH line hasn't been picked up: open a new terminal, or run `agentbox-machine refresh` and then open a new terminal.
+
 On that computer, `agentbox-machine status` shows what's set up. After you change something in agentbox, run `agentbox-machine refresh` to pick it up. `agentbox-machine uninstall` removes everything the setup added.
 
 ## What the setup changes on the computer
@@ -46,7 +48,7 @@ On that computer, `agentbox-machine status` shows what's set up. After you chang
 - `~/.config/agentbox/pass`: the pass, readable only by you (0600).
 - `~/.local/share/agentbox/bin/`: small wrapper scripts named after each CLI, plus `agentbox-machine`.
 - `~/.local/share/agentbox/codex`, `grok` and `gemini`: those CLIs keep their settings and history here instead of in `~/.codex`, `~/.grok` and `~/.gemini`. This is on purpose: a login already stored on the computer (a ChatGPT, Grok or Google sign-in) is then never read or sent anywhere.
-- One PATH line between `# >>> agentbox machine >>>` markers in `~/.profile`, `~/.bashrc` and `~/.zshrc`, for each of these files that exists.
+- One PATH line between `# >>> agentbox machine >>>` markers in each of `~/.profile`, `~/.bash_profile`, `~/.bash_login`, `~/.bashrc`, `~/.zshrc` and `~/.zprofile` that exists. bash reads only the first of `.bash_profile`, `.bash_login` and `.profile` when you log in, so all of them get the line.
 
 ### On Windows
 

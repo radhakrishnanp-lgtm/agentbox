@@ -130,14 +130,20 @@ describe('machine setup script', () => {
     expect(claude.args).toEqual(['--flag', 'two words']);
 
     const codex = pc.seen('codex');
-    expect(codex.vars.get('AGENTBOX_CODEX_KEY')).toBe(pass);
+    // The pass comes from the helper, not the environment: codex's own
+    // background server never sees what this wrapper sets.
+    expect(codex.vars.has('AGENTBOX_CODEX_KEY')).toBe(false);
+    const codexToken = join(pc.bin, '.agentbox-codex-token');
+    expect((await run('/bin/sh', [codexToken], { env: { HOME: pc.home } })).stdout.trim()).toBe(
+      pass,
+    );
     expect(codex.vars.get('CODEX_HOME')).toBe(join(pc.home, '.local/share/agentbox/codex'));
     expect(codex.vars.has('OPENAI_API_KEY')).toBe(false);
     expect(codex.args).toEqual(
       expect.arrayContaining([
         'model_provider="agentbox"',
         `model_providers.agentbox.base_url="${url('openai')}/v1"`,
-        'model_providers.agentbox.env_key="AGENTBOX_CODEX_KEY"',
+        `model_providers.agentbox.auth.command="${codexToken}"`,
         'model_providers.agentbox.wire_api="responses"',
         'analytics.enabled=false',
         'model="gpt-5.1-codex"',
@@ -242,6 +248,40 @@ describe('machine setup script', () => {
 
     await pc.sh('agentbox-machine uninstall');
     expect(existsSync(join(pc.home, '.local/share/agentbox'))).toBe(false);
+  });
+
+  it('puts the PATH line where a login shell will read it, and takes it away again', async () => {
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    const address = h.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('no address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const key = await addKey({ preset: 'anthropic', name: 'Claude', slug: 'anthropic' });
+    await h.reauth(laptop);
+    const created = await laptop.post('/api/gateway/machines', {
+      name: 'gpu-2',
+      keyIds: [key.id],
+      dailyTokenLimit: null,
+    });
+    const { pass } = created.json<MachineCreated>();
+
+    const pc = computer();
+    // bash reads only the first of these when you log in, so .profile alone is
+    // not enough on a computer that has a .bash_profile.
+    writeFileSync(join(pc.home, '.bash_profile'), '# conda etc\n');
+    const script = join(dir, 'machine.sh');
+    writeFileSync(script, renderMachineScript(base));
+    await pc.sh(`sh '${script}'`, { AGENTBOX_PASS: pass });
+    for (const rc of ['.profile', '.bash_profile']) {
+      expect(readFileSync(join(pc.home, rc), 'utf8')).toContain(pc.bin);
+    }
+    // A login shell that reads only .bash_profile still finds the wrappers.
+    const found = await pc.sh(
+      `PATH=/usr/bin:/bin; export PATH; . "$HOME/.bash_profile"; command -v claude`,
+    );
+    expect(found.trim()).toBe(join(pc.bin, 'claude'));
+
+    await pc.sh('agentbox-machine uninstall');
+    expect(readFileSync(join(pc.home, '.bash_profile'), 'utf8')).toBe('# conda etc\n');
   });
 
   it('skips a Kimi key without a model, and a CLI it does not know', async () => {

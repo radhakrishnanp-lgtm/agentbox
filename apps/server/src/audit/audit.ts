@@ -35,6 +35,7 @@ export type AuditAction =
   | 'password.removed'
   | 'ai_key.added'
   | 'ai_key.removed'
+  | 'ai_key.tested'
   | 'machine.added'
   | 'machine.updated'
   | 'machine.revoked'

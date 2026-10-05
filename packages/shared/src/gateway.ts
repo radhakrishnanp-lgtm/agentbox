@@ -320,6 +320,14 @@ export interface GatewayOverview {
   presets: readonly ProviderPreset[];
 }
 
+/** What the "Test" button on an AI key found out. */
+export interface KeyCheckResult {
+  ok: boolean;
+  /** What the provider answered, when it answered at all. */
+  status: number | null;
+  message: string;
+}
+
 export interface GatewayUsageRow {
   id: string;
   ts: string;

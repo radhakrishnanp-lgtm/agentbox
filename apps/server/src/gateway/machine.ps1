@@ -145,11 +145,13 @@
         }
       }
       'codex' {
-        $r.Unset = @('OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY', 'OPENAI_ORGANIZATION', 'OPENAI_PROJECT')
-        $r.Set['AGENTBOX_CODEX_KEY'] = '@PASS@'
+        # codex asks a helper for the pass instead of reading it from the
+        # environment: on Windows its background server is started apart from
+        # this wrapper and never sees a variable set here.
+        $r.Unset = @('OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_API_KEY', 'OPENAI_ORGANIZATION', 'OPENAI_PROJECT', 'AGENTBOX_CODEX_KEY')
         $r.Homes['CODEX_HOME'] = 'codex'
         foreach ($c in @('model_provider=agentbox', 'model_providers.agentbox.name=agentbox',
-            "model_providers.agentbox.base_url=$Url/v1", 'model_providers.agentbox.env_key=AGENTBOX_CODEX_KEY',
+            "model_providers.agentbox.base_url=$Url/v1", "model_providers.agentbox.auth.command=$Bin\agentbox-codex-token.cmd",
             'model_providers.agentbox.wire_api=responses', 'analytics.enabled=false', 'features.plugins=false',
             'features.apps=false', 'check_for_update_on_startup=false')) {
           $r.Args += @('-c', $c)
@@ -232,6 +234,7 @@
   function Write-Wrapper([string]$Cli, [string]$Url, [string]$Model) {
     $r = Get-Recipe $Cli $Url $Model
     if (-not $r) { return }
+    if ($Cli -eq 'codex') { Write-CodexToken }
     $lines = Get-WrapperHead $Cli "runs the real $Cli with this machine's agentbox pass."
     foreach ($name in $r.Unset) { $lines += "set `"$name=`"" }
     foreach ($name in $r.Homes.Keys) {
@@ -251,10 +254,28 @@
       else { $lines += "set `"$name=$($r.Set[$name])`"" }
     }
     # A .cmd CLI (npm installs those) takes over from here and never returns, which is fine.
-    $lines += ('"%agentbox_real%" ' + (($r.Args + '%*') -join ' '))
+    $argv = $r.Args | ForEach-Object { if ($_ -match ' ') { "`"$_`"" } else { $_ } }
+    $lines += ('"%agentbox_real%" ' + ((@($argv) + '%*') -join ' '))
     $lines += Get-WrapperTail
     Write-Ascii (Join-Path $Bin "$Cli.cmd") $lines
     $State.Wired += $Cli
+  }
+
+  # Prints this machine's pass. codex runs it (model_providers.agentbox.auth.command)
+  # whenever it needs the key, including from its own background server.
+  function Write-CodexToken {
+    Write-Ascii (Join-Path $Bin 'agentbox-codex-token.cmd') @(
+      '@echo off',
+      "rem Written by agentbox: gives codex this machine's agentbox pass.",
+      'setlocal DisableDelayedExpansion',
+      "set `"agentbox_pass=$DataCmd\pass`"",
+      'if not exist "%agentbox_pass%" (',
+      '  echo agentbox: no pass on this computer. Run: agentbox-machine refresh 1>&2',
+      '  exit /b 1',
+      ')',
+      'for /f "usebackq delims=" %%P in ("%agentbox_pass%") do echo %%P',
+      'exit /b 0'
+    )
   }
 
   # A "SuperGrok login" key: grok signs in with this machine's pass (the helper
@@ -362,7 +383,7 @@
     New-Item -ItemType Directory -Force -Path $Bin | Out-Null
     $State.Wired = @()
     foreach ($cli in $Clis) { Remove-Item -LiteralPath (Join-Path $Bin "$cli.cmd") -Force -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath (Join-Path $Bin 'agentbox-grok-token.cmd') -Force -ErrorAction SilentlyContinue
+    foreach ($helper in @('agentbox-grok-token.cmd', 'agentbox-codex-token.cmd')) { Remove-Item -LiteralPath (Join-Path $Bin $helper) -Force -ErrorAction SilentlyContinue }
     foreach ($k in $Setup.KeyList) {
       if ($k.Slug -cnotmatch '^[a-z][a-z0-9-]{1,30}$') { continue }
       if (($Clis + 'grok-login') -notcontains $k.Cli) { continue }

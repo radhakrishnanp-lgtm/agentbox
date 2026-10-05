@@ -97,7 +97,16 @@ There's nothing to sign in to there; agentbox handles it. On Windows, PowerShell
 
 A stopped computer gets "agentbox: this machine was stopped in agentbox." from every CLI.
 
-## 5. If something goes wrong
+## 5. Check a key is working
+
+In **Machines → AI keys**, each key has a **Test** button. agentbox asks that provider one small question with your real key (or the login in your vault) and tells you what came back:
+
+- "…answered. This key works." means the key, the address and the vault login are all right, and a computer with that key ticked will work.
+- A red line gives the provider's own words, for example a key that was cancelled, or "The vault on agentbox is locked".
+
+Testing never uses a machine pass, so it works even before you set up any computer.
+
+## 6. If something goes wrong
 
 | Message                                          | What to do                                                                 |
 | ------------------------------------------------ | -------------------------------------------------------------------------- |
@@ -110,6 +119,8 @@ A stopped computer gets "agentbox: this machine was stopped in agentbox." from e
 | A CLI isn't found on that computer               | Install it there, open a new terminal, then run `agentbox-machine refresh` |
 
 ChatGPT login for Codex and the Kimi Code key are new and marked experimental. If either fails, note the exact error message.
+
+Use the **Test** button on the key first: it says whether the problem is the key itself or that computer.
 
 ## Keep it safe
 

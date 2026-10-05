@@ -110,12 +110,14 @@ wrapper_env() {
       fi
       ;;
     codex)
-      UNSET='OPENAI_API_KEY OPENAI_BASE_URL CODEX_API_KEY OPENAI_ORGANIZATION OPENAI_PROJECT'
-      SET='AGENTBOX_CODEX_KEY=@PASS@'
+      # codex asks a helper for the pass instead of reading it from the
+      # environment: its background server is started apart from this wrapper
+      # (always on Windows), and would not see a variable set here.
+      UNSET='OPENAI_API_KEY OPENAI_BASE_URL CODEX_API_KEY OPENAI_ORGANIZATION OPENAI_PROJECT AGENTBOX_CODEX_KEY'
       HOMES='CODEX_HOME=codex'
       ARGS="-c model_provider=\"agentbox\" -c model_providers.agentbox.name=\"agentbox\""
       ARGS="$ARGS -c model_providers.agentbox.base_url=\"$url/v1\""
-      ARGS="$ARGS -c model_providers.agentbox.env_key=\"AGENTBOX_CODEX_KEY\""
+      ARGS="$ARGS -c model_providers.agentbox.auth.command=\"$BIN/.agentbox-codex-token\""
       ARGS="$ARGS -c model_providers.agentbox.wire_api=\"responses\""
       ARGS="$ARGS -c analytics.enabled=false -c features.plugins=false -c features.apps=false"
       ARGS="$ARGS -c check_for_update_on_startup=false"
@@ -147,9 +149,25 @@ wrapper_env() {
   esac
 }
 
+# Prints this machine's pass. codex runs it (model_providers.agentbox.auth.command)
+# whenever it needs the key, including from its own background server.
+write_codex_token() {
+  tmp="$BIN/.codex-token.tmp"
+  {
+    say '#!/bin/sh'
+    say '# Written by agentbox: gives codex this machine'"'"'s agentbox pass.'
+    say "pass_file='$PASS_FILE'"
+    say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
+    say 'cat "$pass_file"'
+  } >"$tmp"
+  chmod 700 "$tmp"
+  mv -f "$tmp" "$BIN/.agentbox-codex-token"
+}
+
 write_wrapper() {
   cli=$1
   wrapper_env "$cli" "$2" "$3" || return 0
+  [ "$cli" != codex ] || write_codex_token
   tmp="$BIN/.$cli.tmp"
   {
     say '#!/bin/sh'
@@ -258,9 +276,13 @@ strip_block() {
   rm -f "$tmp"
 }
 
+# bash reads only the first of .bash_profile, .bash_login and .profile when you
+# log in, so a computer that has a .bash_profile never reads .profile. Every
+# start-up file that exists gets the line, and .profile is created if none do.
 add_path() {
   files=''
-  for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile"; do
+  for rc in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc" \
+    "$HOME/.zshrc" "$HOME/.zprofile"; do
     [ -f "$rc" ] && files="$files $rc"
   done
   case "${SHELL:-}" in
@@ -284,7 +306,7 @@ apply_setup() {
   MACHINE=''
   EXPIRES=''
   for cli in $CLIS; do rm -f "$BIN/$cli"; done
-  rm -f "$BIN/.agentbox-grok-token"
+  rm -f "$BIN/.agentbox-grok-token" "$BIN/.agentbox-codex-token"
   while IFS="$TAB" read -r kind a b c d; do
     case "$kind" in
       machine)
@@ -390,7 +412,8 @@ case "$cmd" in
     done
     ;;
   uninstall)
-    for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.zprofile"; do strip_block "$rc"; done
+    for rc in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc" \
+      "$HOME/.zshrc" "$HOME/.zprofile"; do strip_block "$rc"; done
     rm -rf "$BIN" "$DATA/codex" "$DATA/grok" "$DATA/grok-login" "$DATA/gemini" "$CONF"
     rmdir "$DATA" 2>/dev/null || true
     say 'Removed agentbox from this computer. Also stop the machine in agentbox → Machines.'

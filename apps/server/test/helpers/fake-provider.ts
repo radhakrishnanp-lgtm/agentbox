@@ -19,6 +19,8 @@ export class FakeProvider {
   slowClosed = false;
   /** Set when a request that never got an answer was closed by the gateway. */
   hangClosed = false;
+  /** When set, the models list answers with this instead (for refused keys). */
+  refuse: { status: number; body: unknown } | null = null;
   #server: Server;
   url = '';
 
@@ -132,6 +134,16 @@ export class FakeProvider {
             candidates: [{ content: { parts: [{ text: 'hi' }], role: 'model' } }],
             usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 2 },
           });
+          return;
+        }
+        // What a key's "Test" asks for: the models this key may use.
+        if (
+          path === '/v1/models' ||
+          path === '/v1beta/models' ||
+          path === '/backend-api/codex/models'
+        ) {
+          if (this.refuse) json(this.refuse.status, this.refuse.body);
+          else json(200, { data: [{ id: 'model-1' }] });
           return;
         }
         if (path === '/slow') {

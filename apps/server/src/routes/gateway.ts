@@ -15,6 +15,7 @@ import {
   type GatewayUsageRow,
   type MachineCreated,
 } from '@agentbox/shared';
+import { checkKey, type KeyCheckResult } from '../gateway/check.ts';
 import { installCommands } from '../gateway/script.ts';
 import { authOf, guards } from '../http/guards.ts';
 import { iso } from '../lib/clock.ts';
@@ -43,6 +44,34 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
         config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
       },
       async (request) => s.gateway.addKey(request.body, actor(request), request.ip),
+    );
+
+    // "Test": agentbox asks the provider one small question with this key.
+    app.post(
+      '/api/gateway/keys/:id/test',
+      {
+        schema: { params: z.object({ id: z.uuid() }) },
+        preHandler: requireSession(),
+        config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+      },
+      async (request, reply): Promise<KeyCheckResult | undefined> => {
+        const key = s.gateway.activeKeys().find((k) => k.id === request.params.id);
+        if (!key) return reply.code(404).send({ message: 'There is no such key.' });
+        const result = await checkKey(s, key);
+        s.audit.record({
+          actor: actor(request),
+          action: 'ai_key.tested',
+          targetType: 'ai_key',
+          targetId: key.id,
+          ip: request.ip,
+          details: {
+            name: key.name,
+            ok: result.ok,
+            ...(result.status ? { status: result.status } : {}),
+          },
+        });
+        return result;
+      },
     );
 
     app.delete(
