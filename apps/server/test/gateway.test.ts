@@ -1075,3 +1075,159 @@ describe('helpers', () => {
     expect(other.finish()).toEqual({ inputTokens: null, outputTokens: null });
   });
 });
+
+describe('ChatGPT login for Codex', () => {
+  const JWT = `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp: 4102444800 })).toString('base64url')}.sig`;
+  const login = () => ({ token: JWT, accountId: 'acct-123', expiresAt: h.clock.now() + 3_600_000 });
+
+  async function loginKey() {
+    const key = await addKey({
+      preset: 'codex-login',
+      name: 'ChatGPT',
+      slug: 'chatgpt',
+      secret: '',
+    });
+    expect(key.upstream).toBe('https://chatgpt.com/backend-api/codex');
+    // Point it at the stand-in provider instead of ChatGPT.
+    h.services.db
+      .update(aiKey)
+      .set({ upstream: `${provider.url}/backend-api/codex` })
+      .where(eq(aiKey.id, key.id))
+      .run();
+    return key;
+  }
+
+  it('wires up codex, and adds the vault login and account only on the way to ChatGPT', async () => {
+    const key = await loginKey();
+    expect(key.auth).toBe('codex-login');
+    expect(key.cli).toBe('codex');
+    expect(key.hint).toBe('VPS login');
+    const { pass } = await addMachine([key.id]);
+    const ask = vi.spyOn(h.services.terminals.client, 'request').mockResolvedValue(login());
+
+    const res = await gw({
+      url: '/gw/chatgpt/v1/responses',
+      headers: {
+        authorization: `Bearer ${pass}`,
+        'chatgpt-account-id': 'someone-else',
+        originator: 'codex_exec',
+      },
+      payload: { model: 'gpt-5.5', input: [], stream: true },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(ask).toHaveBeenCalledWith({ op: 'codex.token' });
+    const seen = provider.last();
+    // ChatGPT's Codex backend has no /v1.
+    expect(seen.url).toBe('/backend-api/codex/responses');
+    expect(seen.headers.authorization).toBe(`Bearer ${JWT}`);
+    expect(seen.headers['chatgpt-account-id']).toBe('acct-123');
+    expect(seen.headers.originator).toBe('codex_exec');
+    expect(JSON.stringify(seen.headers)).not.toContain(pass);
+    expect(res.body).not.toContain(JWT);
+
+    const text = await gw({
+      method: 'GET',
+      url: '/gw/_machine',
+      headers: { authorization: `Bearer ${pass}`, accept: 'text/plain' },
+    });
+    expect(text.body.trim().split('\n')[1]?.split('\t').slice(0, 3)).toEqual([
+      'key',
+      'chatgpt',
+      'codex',
+    ]);
+  });
+
+  it('says clearly when Codex is not signed in or the vault is locked, and Stop cuts it off', async () => {
+    const key = await loginKey();
+    const { pass, machine } = await addMachine([key.id]);
+    const ask = vi.spyOn(h.services.terminals.client, 'request');
+    const call = () =>
+      gw({
+        url: '/gw/chatgpt/v1/responses',
+        headers: { authorization: `Bearer ${pass}` },
+        payload: { model: 'gpt-5.5', input: [] },
+      });
+    const { TermdRefused } = await import('../src/terminals/client.ts');
+    ask.mockRejectedValueOnce(new TermdRefused('vault_locked', 'Unlock the vault first.'));
+    const locked = await call();
+    expect(locked.statusCode).toBe(403);
+    expect(locked.json().error.message).toMatch(/vault on agentbox is locked/);
+    ask.mockRejectedValueOnce(
+      new TermdRefused(
+        'not_found',
+        'Codex is not signed in with ChatGPT on agentbox. Open a terminal in agentbox and run codex login --device-auth.',
+      ),
+    );
+    const out = await call();
+    expect(out.statusCode).toBe(403);
+    expect(out.json().error.message).toMatch(/codex login --device-auth/);
+
+    ask.mockResolvedValue(login());
+    expect((await call()).statusCode).toBe(200);
+    await laptop.post(`/api/gateway/machines/${machine.id}/revoke`);
+    expect((await call()).statusCode).toBe(403);
+    expect(provider.seen).toHaveLength(1);
+  });
+
+  it('never sends the vault login to an address you typed, or as a pasted key', async () => {
+    await h.reauth(laptop);
+    const res = await laptop.post('/api/gateway/keys', {
+      preset: 'codex-login',
+      name: 'ChatGPT',
+      slug: 'chatgpt',
+      secret: '',
+      upstream: 'https://attacker.example',
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().upstream).toBe('https://chatgpt.com/backend-api/codex');
+    await h.reauth(laptop);
+    const custom = await laptop.post('/api/gateway/keys', {
+      preset: 'custom',
+      name: 'x',
+      slug: 'x-login',
+      secret: 'something-long',
+      upstream: provider.url,
+      auth: 'codex-login',
+    });
+    expect(custom.statusCode).toBe(400);
+  });
+});
+
+describe('Kimi Code subscription key', () => {
+  it('sends Kimi Code to the coding plan address with the plan key', async () => {
+    const key = await addKey({
+      preset: 'kimi-code',
+      name: 'Kimi Code',
+      slug: 'kimi-code',
+      secret: 'sk-kimi-plan-key-0000',
+      upstream: `${provider.url}/coding`,
+      model: 'kimi-for-coding',
+    });
+    expect(key.cli).toBe('kimi');
+    expect(key.model).toBe('kimi-for-coding');
+    const { pass } = await addMachine([key.id]);
+    const res = await gw({
+      url: '/gw/kimi-code/v1/chat/completions',
+      headers: { authorization: `Bearer ${pass}`, 'user-agent': 'KimiCLI/2.1.1' },
+      payload: { model: 'kimi-for-coding', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const seen = provider.last();
+    expect(seen.url).toBe('/coding/v1/chat/completions');
+    expect(seen.headers.authorization).toBe('Bearer sk-kimi-plan-key-0000');
+    // Kimi lets only coding tools use plan keys, so their name goes along.
+    expect(seen.headers['user-agent']).toBe('KimiCLI/2.1.1');
+  });
+
+  it('uses the coding plan address unless you change it', async () => {
+    const key = await addKey({
+      preset: 'kimi-code',
+      name: 'Kimi Code',
+      slug: 'kimi-code',
+      secret: 'sk-kimi-plan-key-0000',
+      upstream: undefined,
+      model: 'kimi-for-coding',
+    });
+    expect(key.upstream).toBe('https://api.kimi.com/coding');
+  });
+});

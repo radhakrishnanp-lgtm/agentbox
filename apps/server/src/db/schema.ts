@@ -238,7 +238,14 @@ export const aiKey = sqliteTable(
     preset: text('preset').notNull(),
     upstream: text('upstream').notNull(),
     auth: text('auth', {
-      enum: ['x-api-key', 'bearer', 'x-goog-api-key', 'anthropic-oauth', 'grok-login'],
+      enum: [
+        'x-api-key',
+        'bearer',
+        'x-goog-api-key',
+        'anthropic-oauth',
+        'grok-login',
+        'codex-login',
+      ],
     }).notNull(),
     cli: text('cli', { enum: ['claude', 'codex', 'grok', 'kimi', 'gemini'] }),
     /** Model the machine's CLI uses by default (needed when the provider isn't the CLI's own). */

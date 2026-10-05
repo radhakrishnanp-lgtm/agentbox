@@ -1130,7 +1130,7 @@ function AddKey({
   const [slug, setSlug] = useState(freeSlug(first?.slug ?? 'key'));
   const [upstream, setUpstream] = useState(first?.upstream ?? '');
   const [secret, setSecret] = useState('');
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState(first?.defaultModel ?? '');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1141,6 +1141,7 @@ function AddKey({
     setName(p.label.split(' (')[0] ?? p.label);
     setSlug(freeSlug(p.slug));
     setUpstream(p.upstream);
+    setModel(p.defaultModel ?? '');
   };
 
   const submit = (e: SyntheticEvent) => {

@@ -131,8 +131,8 @@ export class GatewayStore {
     if (preset.noSecret && auth !== preset.auth) {
       throw new AppError('bad_request', 'This one can only be used as a login.');
     }
-    if (!preset.noSecret && auth === 'grok-login') {
-      throw new AppError('bad_request', 'Pick “SuperGrok login” for that.');
+    if (!preset.noSecret && (auth === 'grok-login' || auth === 'codex-login')) {
+      throw new AppError('bad_request', 'Pick the login from the provider list for that.');
     }
     if (/\s/.test(secret)) {
       throw new AppError('bad_request', 'The key has a space or line break in it. Paste it again.');

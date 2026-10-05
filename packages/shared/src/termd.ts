@@ -22,10 +22,20 @@ export type TermdRequest =
   | { op: 'vault.lock' }
   | { op: 'vault.reset' }
   /** A short-lived access token from the Grok login in the vault (for machines). */
-  | { op: 'grok.token' };
+  | { op: 'grok.token' }
+  /** The Codex (ChatGPT) login in the vault: access token and account (for machines). */
+  | { op: 'codex.token' };
 
 export interface TermdGrokToken {
   token: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+}
+
+export interface TermdCodexToken {
+  token: string;
+  /** Sent to ChatGPT as ChatGPT-Account-ID. */
+  accountId: string;
   /** Epoch milliseconds. */
   expiresAt: number;
 }

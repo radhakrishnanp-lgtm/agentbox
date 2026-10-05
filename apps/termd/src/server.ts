@@ -18,6 +18,7 @@ import {
 } from '@agentbox/shared/termd';
 import type { TermdConfig } from './config.ts';
 import { TermdError, Tmux, checkName, clampSize } from './tmux.ts';
+import { CodexLogin } from './codex.ts';
 import { GrokLogin } from './grok.ts';
 import { Vault, VaultError } from './vault.ts';
 
@@ -42,6 +43,7 @@ export class Termd {
   readonly tmux: Tmux;
   readonly vault: Vault;
   readonly grok: GrokLogin;
+  readonly codex: CodexLogin;
   readonly #env: NodeJS.ProcessEnv;
   readonly #log: Log;
   readonly #attached = new Set<pty.IPty>();
@@ -55,6 +57,7 @@ export class Termd {
     this.tmux = new Tmux(config, env);
     this.vault = vault ?? new Vault(config, env);
     this.grok = new GrokLogin(config.home, env);
+    this.codex = new CodexLogin(config.home);
   }
 
   async listen(): Promise<void> {
@@ -186,6 +189,10 @@ export class Termd {
         case 'grok.token': {
           this.vault.assertUsable();
           return { ok: true, ...(await this.grok.token()) };
+        }
+        case 'codex.token': {
+          this.vault.assertUsable();
+          return { ok: true, ...(await this.codex.token()) };
         }
         case 'vault.reset':
           this.vault.reset();

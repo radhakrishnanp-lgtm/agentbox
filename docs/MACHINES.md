@@ -106,14 +106,16 @@ Every request is logged in agentbox (which key, model, tokens and status, never 
 | Anthropic API key                              | `claude`    | Recommended for Claude Code.                                                                                                                                             |
 | Claude Pro/Max token from `claude setup-token` | `claude`    | **Experimental.** Claude Code accepts it; relaying it has not been confirmed against Anthropic's live service, and Anthropic may limit how subscription tokens are used. |
 | OpenAI API key                                 | `codex`     |                                                                                                                                                                          |
+| ChatGPT login from your Terminals (Codex)      | `codex`     | **Experimental.** Nothing to paste: see [Codex with your ChatGPT login](#codex-with-your-chatgpt-login).                                                                 |
 | xAI API key                                    | `grok`      | Works with both the official xAI `grok` and the open-source Grok CLI.                                                                                                    |
 | SuperGrok login from your Terminals            | `grok`      | **Experimental.** Nothing to paste: see [SuperGrok on other computers](#supergrok-on-other-computers). Official xAI `grok` only.                                         |
+| Kimi Code subscription key                     | `kimi`      | **Experimental.** A key from your Kimi Code plan: see [Kimi Code subscription](#kimi-code-subscription). The model is filled in as `kimi-for-coding`.                    |
 | Moonshot API key                               | `kimi`      | Works with Kimi Code and the older kimi-cli. Needs a model name (for example `kimi-k2`) when you add the key.                                                            |
 | Moonshot API key, Claude-compatible address    | `claude`    | Runs Kimi models inside Claude Code. Needs a model name.                                                                                                                 |
 | Google Gemini API key                          | `gemini`    |                                                                                                                                                                          |
 | OpenRouter, or any HTTPS API                   | none        | Point any compatible tool at the key's gateway address, with the machine's pass as its API key.                                                                          |
 
-A machine can have one key per CLI. Other subscription logins (for example a ChatGPT login in Codex) don't work through the gateway yet. Use them in the browser terminal on the VPS instead.
+A machine can have one key per CLI.
 
 ## SuperGrok on other computers
 
@@ -129,6 +131,28 @@ How it works: the wrapper points grok at agentbox (`GROK_CLI_CHAT_PROXY_BASE_URL
 - The vault must be unlocked, or the other computer gets "the vault on agentbox is locked".
 - Setups made before this change fetched the xAI token itself, which kept working after Stop until it expired. agentbox now refuses those; run `agentbox-machine refresh` on that computer (it also deletes the old token).
 - Tested with the official `grok` 1.0.44 against a stand-in for xAI. Not yet checked against the live Grok service.
+
+## Codex with your ChatGPT login
+
+Your ChatGPT (Plus/Pro) login for Codex lives only on agentbox, like SuperGrok:
+
+1. In agentbox, open **Terminals**, unlock the vault and run `codex login --device-auth`. Open the link it shows, sign in with ChatGPT and enter the code (once).
+2. In **Machines → AI keys**, add **ChatGPT login from your Terminals (Codex)**. There is nothing to paste.
+3. Tick that key on the machine. On a computer that is already set up, run `agentbox-machine refresh`.
+4. Type `codex` there as usual.
+
+agentbox adds the ChatGPT token from the vault to each request and forwards it to ChatGPT. The other computer only has its machine pass, so **Stop cuts it off at once**. When the token is close to expiring, agentbox renews it the same way Codex does.
+
+- The vault must be unlocked, or the other computer gets "the vault on agentbox is locked".
+- Tested with the real `codex` 0.160 against a stand-in for ChatGPT. Not yet checked against the live ChatGPT service.
+
+## Kimi Code subscription
+
+1. Sign in at kimi.com, open the Kimi Code console and create an API key under **API keys**.
+2. In **Machines → AI keys**, add **Kimi Code subscription key** and paste it. The model `kimi-for-coding` is filled in.
+3. Tick that key on the machine (`agentbox-machine refresh` on a computer that is already set up), then type `kimi`.
+
+Requests go to `https://api.kimi.com/coding` and count against your Kimi Code plan. Not yet checked against the live Kimi service.
 
 ## How each CLI is wired
 

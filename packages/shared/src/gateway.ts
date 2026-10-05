@@ -13,7 +13,9 @@ export type KeyAuthStyle =
   | 'x-goog-api-key'
   | 'anthropic-oauth'
   /** No stored key: the Grok login in the terminal vault hands out short-lived tokens. */
-  | 'grok-login';
+  | 'grok-login'
+  /** No stored key: the Codex (ChatGPT) login in the terminal vault is added on the way. */
+  | 'codex-login';
 
 export const KEY_AUTH_STYLES = [
   'x-api-key',
@@ -21,6 +23,7 @@ export const KEY_AUTH_STYLES = [
   'x-goog-api-key',
   'anthropic-oauth',
   'grok-login',
+  'codex-login',
 ] as const satisfies readonly KeyAuthStyle[];
 
 /** The CLIs agentbox can wire up on a machine. */
@@ -41,6 +44,8 @@ export interface ProviderPreset {
   experimental?: boolean;
   /** The CLI can't pick a model for this provider by itself, so the key must name one. */
   needsModel?: boolean;
+  /** Filled in as the model when this preset is picked. */
+  defaultModel?: string;
   /** Shown as a warning when the preset is picked. */
   note?: string;
   /** Nothing to paste: the login comes from somewhere else on agentbox. */
@@ -78,6 +83,18 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     help: 'platform.openai.com → API keys. Starts with sk-.',
   },
   {
+    id: 'codex-login',
+    label: 'ChatGPT login from your Terminals (Codex)',
+    upstream: 'https://chatgpt.com/backend-api/codex',
+    auth: 'codex-login',
+    cli: 'codex',
+    slug: 'chatgpt',
+    help: 'Sign in to Codex once in a terminal on this server: run codex login --device-auth and sign in with your ChatGPT account. Nothing to paste here.',
+    experimental: true,
+    noSecret: true,
+    note: "Codex on your other computers sends every request through agentbox with the machine's pass, and agentbox adds your ChatGPT login from the vault. The login never leaves this server, so Stop cuts a machine off at once. The vault must be unlocked. Not yet checked against the live ChatGPT service.",
+  },
+  {
     id: 'xai',
     label: 'xAI API key (Grok)',
     upstream: 'https://api.x.ai',
@@ -107,6 +124,19 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     slug: 'kimi',
     help: 'platform.moonshot.ai → API keys. For China accounts, change the address to https://api.moonshot.cn.',
     needsModel: true,
+  },
+  {
+    id: 'kimi-code',
+    label: 'Kimi Code subscription key (Kimi)',
+    upstream: 'https://api.kimi.com/coding',
+    auth: 'bearer',
+    cli: 'kimi',
+    slug: 'kimi-code',
+    help: 'Kimi Code console (kimi.com/code) → API keys → create a key. It uses your Kimi Code plan, not Moonshot credit.',
+    needsModel: true,
+    defaultModel: 'kimi-for-coding',
+    experimental: true,
+    note: 'Kimi Code on your other computers uses this key through agentbox. Kimi only lets coding tools use plan keys, and agentbox passes Kimi Code’s own name along. Not yet checked against the live Kimi service.',
   },
   {
     id: 'moonshot-anthropic',
