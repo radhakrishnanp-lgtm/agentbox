@@ -319,3 +319,33 @@ export const gatewayUsage = sqliteTable(
     index('gateway_usage_ts').on(t.ts),
   ],
 );
+
+/**
+ * Agent tracker: what an AI agent on a machine sent and got back (prompts,
+ * thinking, tool and command calls, MCP calls, answers), saved only while the
+ * owner has the tracker on. The content is encrypted; it stays until deleted.
+ */
+export const agentTrace = sqliteTable(
+  'agent_trace',
+  {
+    id: text('id').primaryKey(),
+    ts: integer('ts').notNull(),
+    /** Kept when the machine is deleted; the name is copied for that reason. */
+    machineId: text('machine_id').notNull(),
+    machineName: text('machine_name').notNull(),
+    keySlug: text('key_slug').notNull(),
+    cli: text('cli'),
+    model: text('model'),
+    status: integer('status').notNull(),
+    durationMs: integer('duration_ms').notNull(),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    /** How many steps of each kind, e.g. {"prompt":1,"command":2}. */
+    counts: text('counts', { mode: 'json' }).$type<Record<string, number>>().notNull(),
+    /** AES-256-GCM: the JSON list of steps. */
+    eventsEnc: text('events_enc').notNull(),
+    /** Your own note; editable. */
+    note: text('note').notNull().default(''),
+  },
+  (t) => [index('agent_trace_ts').on(t.ts), index('agent_trace_machine').on(t.machineId, t.ts)],
+);

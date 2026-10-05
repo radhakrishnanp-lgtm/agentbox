@@ -7,6 +7,7 @@ import { SetupService } from './auth/setup.ts';
 import { WebAuthnService } from './auth/webauthn.ts';
 import { RelayState } from './gateway/relay.ts';
 import { GatewayStore } from './gateway/store.ts';
+import { Tracker } from './gateway/tracker.ts';
 import type { Config } from './config/env.ts';
 import { SettingsStore } from './config/settings.ts';
 import type { Db } from './db/client.ts';
@@ -32,6 +33,7 @@ export interface Services {
   setup: SetupService;
   gateway: GatewayStore;
   relay: RelayState;
+  tracker: Tracker;
   terminals: Terminals;
 }
 
@@ -64,6 +66,7 @@ export function createServices(
     setup: new SetupService(db, clock, config, box, audit),
     gateway: new GatewayStore(db, clock, box, audit, config),
     relay: new RelayState(),
+    tracker: new Tracker(db, clock, box, audit),
     terminals: new Terminals(new TermdClient(config.termdSocket), db, clock, box, audit, log),
   };
 }

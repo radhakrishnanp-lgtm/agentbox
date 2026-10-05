@@ -1,6 +1,6 @@
 import type { GatewayLogs, LogsDay, LogsMachine, LogsPeriod, LogsRow } from '@agentbox/shared';
 import { Download, RefreshCw, ScrollText } from 'lucide-react';
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
 import { PageHeader } from '../components/Layout.tsx';
 import { Button } from '../components/ui/button.tsx';
 import { Card, CardBody, CardHeader } from '../components/ui/card.tsx';
@@ -8,6 +8,7 @@ import { Alert, Badge, EmptyState, Skeleton } from '../components/ui/feedback.ts
 import { api, errorMessage } from '../lib/api.ts';
 import { cn } from '../lib/cn.ts';
 import { dateTime, relativeTime } from '../lib/format.ts';
+import { AgentTracker } from './AgentTracker.tsx';
 
 /** How often the screen fetches fresh numbers while it is open. */
 const REFRESH_MS = 30_000;
@@ -76,7 +77,55 @@ function csv(rows: LogsRow[]): string {
   ].join('\n');
 }
 
+/** Logs has two views: usage (always on) and the agent tracker (off unless you turn it on). */
 export function Logs() {
+  const [view, setView] = useState<'usage' | 'tracker'>(() => {
+    try {
+      return sessionStorage.getItem('agentbox.logs.view') === 'tracker' ? 'tracker' : 'usage';
+    } catch {
+      return 'usage';
+    }
+  });
+  const pick = (v: 'usage' | 'tracker') => {
+    setView(v);
+    try {
+      sessionStorage.setItem('agentbox.logs.view', v);
+    } catch {
+      /* private window */
+    }
+  };
+  const tabs = (
+    <div role="tablist" aria-label="Logs" className="mb-4 flex gap-1 border-b border-border">
+      {(
+        [
+          ['usage', 'Usage'],
+          ['tracker', 'Agent tracker'],
+        ] as const
+      ).map(([v, label]) => (
+        <button
+          key={v}
+          type="button"
+          role="tab"
+          aria-selected={view === v}
+          className={cn(
+            '-mb-px min-h-11 border-b-2 px-3 text-sm font-medium',
+            view === v
+              ? 'border-accent text-text'
+              : 'border-transparent text-muted hover:text-text',
+          )}
+          onClick={() => {
+            pick(v);
+          }}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+  return view === 'usage' ? <UsageLogs tabs={tabs} /> : <AgentTracker tabs={tabs} />;
+}
+
+function UsageLogs({ tabs }: { tabs: ReactNode }) {
   const [period, setPeriod] = useState<LogsPeriod>('7d');
   const [machineId, setMachineId] = useState('');
   const [errorsOnly, setErrorsOnly] = useState(false);
@@ -171,6 +220,7 @@ export function Logs() {
           </Button>
         }
       />
+      {tabs}
 
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <label htmlFor={periodId} className="block text-sm">

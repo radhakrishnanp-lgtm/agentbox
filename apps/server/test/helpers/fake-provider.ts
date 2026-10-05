@@ -21,6 +21,8 @@ export class FakeProvider {
   hangClosed = false;
   /** When set, the models list answers with this instead (for refused keys). */
   refuse: { status: number; body: unknown } | null = null;
+  /** When set, /v1/messages answers with this raw event stream instead. */
+  sse: string | null = null;
   #server: Server;
   url = '';
 
@@ -46,6 +48,11 @@ export class FakeProvider {
           });
           res.end(JSON.stringify(value));
         };
+        if (path === '/v1/messages' && this.sse !== null) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(this.sse);
+          return;
+        }
         if (path === '/v1/messages') {
           const parsed = JSON.parse(body || '{}') as { stream?: boolean; model?: string };
           if (parsed.stream) {

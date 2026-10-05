@@ -57,6 +57,13 @@
       "when": 1791208606938,
       "tag": "0007_usage_ip",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791215853871,
+      "tag": "0008_agent_tracker",
+      "breakpoints": true
     }
   ]
 }
