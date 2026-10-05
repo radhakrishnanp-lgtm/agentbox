@@ -6,11 +6,13 @@ import {
   machineUpdateSchema,
   type AiKeySummary,
   type GatewayOverview,
+  type KeyCheckResult,
   type MachineCreated,
   type MachineSummary,
   type ProviderPreset,
 } from '@agentbox/shared';
 import {
+  CheckCircle2,
   Copy,
   KeyRound,
   Pencil,
@@ -19,7 +21,9 @@ import {
   Power,
   RefreshCw,
   Server,
+  Stethoscope,
   Terminal,
+  XCircle,
   Trash2,
 } from 'lucide-react';
 import { useId, useState, type KeyboardEvent, type ReactNode, type SyntheticEvent } from 'react';
@@ -1049,6 +1053,20 @@ function KeyRow({
   const { setSession } = useAuth();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<KeyCheckResult | null>(null);
+  const test = () => {
+    setTesting(true);
+    setResult(null);
+    post<KeyCheckResult>(`/api/gateway/keys/${encodeURIComponent(k.id)}/test`)
+      .then(setResult)
+      .catch((err: unknown) => {
+        setResult({ ok: false, status: null, message: errorMessage(err) });
+      })
+      .finally(() => {
+        setTesting(false);
+      });
+  };
   const remove = () => {
     setBusy(true);
     withFreshAuth(
@@ -1082,7 +1100,27 @@ function KeyRow({
           {k.gatewayUrl}
           {k.lastUsedAt ? ` · last used ${relativeTime(k.lastUsedAt)}` : ' · never used'}
         </p>
+        {result ? (
+          <p
+            className={cn(
+              'flex items-start gap-1.5 text-sm',
+              result.ok ? 'text-success' : 'text-danger',
+            )}
+            role="status"
+          >
+            {result.ok ? (
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
+            ) : (
+              <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+            )}
+            {result.message}
+          </p>
+        ) : null}
       </div>
+      <Button variant="ghost" onClick={test} disabled={testing}>
+        <Stethoscope className="size-4" aria-hidden />
+        {testing ? 'Testing…' : 'Test'}
+      </Button>
       <Button
         variant="ghost"
         className="text-danger"

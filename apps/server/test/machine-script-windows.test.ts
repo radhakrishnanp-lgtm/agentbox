@@ -317,12 +317,18 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
       expect(claude.args).toBe('--flag "two words"');
 
       const codex = pc.seen('codex');
-      expect(codex.vars.get('AGENTBOX_CODEX_KEY')).toBe(pass);
+      // The pass comes from the helper, not the environment: codex starts its
+      // background server apart from this wrapper, which would not see it.
+      expect(codex.vars.has('AGENTBOX_CODEX_KEY')).toBe(false);
+      expect(existsSync(join(pc.bin, 'agentbox-codex-token.cmd'))).toBe(true);
       expect(codex.vars.get('CODEX_HOME')).toBe(`${pc.wLocal}\\agentbox\\codex`);
       expect(codex.vars.has('OPENAI_API_KEY')).toBe(false);
       expect(codex.args).toContain('-c model_provider=agentbox');
       expect(codex.args).toContain(`-c model_providers.agentbox.base_url=${url('openai')}/v1`);
-      expect(codex.args).toContain('-c model_providers.agentbox.env_key=AGENTBOX_CODEX_KEY');
+      expect(codex.args).toContain(
+        // pwsh builds this from its own %LOCALAPPDATA%, which is this folder here.
+        `-c model_providers.agentbox.auth.command=${pc.bin}\\agentbox-codex-token.cmd`,
+      );
       expect(codex.args).toContain('-c model_providers.agentbox.wire_api=responses');
       expect(codex.args).toContain('-c analytics.enabled=false');
       expect(codex.args).toMatch(/-c model=gpt-5\.1-codex --flag "two words"$/);

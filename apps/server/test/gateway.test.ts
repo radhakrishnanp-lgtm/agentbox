@@ -2,12 +2,18 @@ import { connect } from 'node:net';
 import { request as httpRequest } from 'undici';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GATEWAY_LIMITS, type AiKeySummary, type MachineCreated } from '@agentbox/shared';
+import {
+  GATEWAY_LIMITS,
+  type AiKeySummary,
+  type KeyCheckResult,
+  type MachineCreated,
+} from '@agentbox/shared';
 import { aiKey, auditLog, machine as machineTable } from '../src/db/schema.ts';
 import { ANTHROPIC_OAUTH_BETA, cleanQuery, safePath } from '../src/gateway/relay.ts';
 import { renderMachineScript } from '../src/gateway/script.ts';
 import { addressRule, ipAllowed } from '../src/gateway/store.ts';
 import { UsageMeter } from '../src/gateway/usage.ts';
+import { TermdRefused } from '../src/terminals/client.ts';
 import { FakeProvider } from './helpers/fake-provider.ts';
 import { buildApp } from '../src/app.ts';
 import { Harness, ORIGIN, RP_ID, testConfig, type Browser } from './helpers/harness.ts';
@@ -1229,5 +1235,60 @@ describe('Kimi Code subscription key', () => {
       model: 'kimi-for-coding',
     });
     expect(key.upstream).toBe('https://api.kimi.com/coding');
+  });
+});
+
+describe('testing a key', () => {
+  it('asks the provider with the real key and says it works', async () => {
+    const key = await addKey();
+    const res = await laptop.post(`/api/gateway/keys/${key.id}/test`);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json<KeyCheckResult>()).toMatchObject({ ok: true, status: 200 });
+    const seen = provider.last();
+    expect(seen.url).toBe('/v1/models?limit=1');
+    expect(seen.headers['x-api-key']).toBe(REAL_KEY);
+    const actions = h.services.db
+      .select()
+      .from(auditLog)
+      .all()
+      .map((row) => row.action);
+    expect(actions).toContain('ai_key.tested');
+  });
+
+  it('passes on what the provider says when it refuses the key', async () => {
+    const key = await addKey({ slug: 'openai', preset: 'openai', cli: 'codex' });
+    provider.refuse = { status: 401, body: { error: { message: 'Incorrect API key provided.' } } };
+    const res = await laptop.post(`/api/gateway/keys/${key.id}/test`);
+    const result = res.json<KeyCheckResult>();
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(401);
+    expect(result.message).toContain('Incorrect API key provided.');
+  });
+
+  it('says to unlock the vault for a login key', async () => {
+    const key = await addKey({
+      preset: 'grok-login',
+      name: 'SuperGrok',
+      slug: 'supergrok',
+      secret: '',
+    });
+    vi.spyOn(h.services.terminals.client, 'request').mockRejectedValue(
+      new TermdRefused('vault_locked', 'the vault is locked'),
+    );
+    const res = await laptop.post(`/api/gateway/keys/${key.id}/test`);
+    const result = res.json<KeyCheckResult>();
+    expect(result).toMatchObject({ ok: false, status: null });
+    expect(result.message).toContain('vault on agentbox is locked');
+    expect(key.id).toBeTruthy();
+  });
+
+  it('is only for signed-in devices', async () => {
+    const key = await addKey();
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/api/gateway/keys/${key.id}/test`,
+      headers: { 'x-agentbox': '1' },
+    });
+    expect(res.statusCode).toBe(403);
   });
 });
