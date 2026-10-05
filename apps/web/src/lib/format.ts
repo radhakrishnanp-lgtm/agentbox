@@ -39,6 +39,14 @@ export function relativeTime(iso: string, now = Date.now()): string {
   return diff < 0 ? 'just now' : 'in a moment';
 }
 
+/**
+ * For things that already happened. A computer whose clock runs a little behind
+ * agentbox's would otherwise see "in 10 minutes".
+ */
+export function agoTime(iso: string, now = Date.now()): string {
+  return new Date(iso).getTime() > now ? 'just now' : relativeTime(iso, now);
+}
+
 export function dateTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }

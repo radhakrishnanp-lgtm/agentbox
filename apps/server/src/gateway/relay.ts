@@ -21,12 +21,24 @@ import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
 import { ipAllowed, type AiKeyRow, type MachineRow } from './store.ts';
-import { TraceCollector, isModelCall, requestSteps } from './trace.ts';
+import {
+  TraceCollector,
+  isModelCall,
+  requestContext,
+  requestSteps,
+  withVisibleThinking,
+} from './trace.ts';
 import { requestModel, UsageMeter } from './usage.ts';
 
 export const GATEWAY_BODY_LIMIT = 32 * 1024 * 1024;
 const MAX_CONCURRENT_PER_MACHINE = 16;
 const WATCHDOG_MS = 2000;
+
+/**
+ * Keys whose provider refused the tracker's "show the thinking" setting. Their
+ * requests go out unchanged from then on (until agentbox restarts).
+ */
+const thinkingRefused = new Set<string>();
 
 /** Anthropic's beta flag that lets a Claude subscription token call the Messages API. */
 /** Logged when the machine gave up before the provider answered (nginx's convention). */
@@ -639,6 +651,14 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         const trace =
           s.tracker.enabled() && isModelCall(request.method, path) ? new TraceCollector() : null;
         const answer: { type: string | undefined } = { type: undefined };
+        // The tracker asks the provider for readable thinking; the CLI's own settings stay as they were.
+        const traceBody =
+          trace &&
+          request.method === 'POST' &&
+          !request.headers['content-encoding'] &&
+          !thinkingRefused.has(key.id)
+            ? withVisibleThinking(body)
+            : null;
 
         const ctrl = new AbortController();
         const untrack = state.track(m.id, ctrl);
@@ -682,6 +702,10 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
                 inputTokens: usage.inputTokens,
                 outputTokens: usage.outputTokens,
                 steps: [...requestSteps(body), ...trace.finish(answer.type)],
+                ...requestContext(body),
+                ...(({ read, write }) => ({ cacheReadTokens: read, cacheWriteTokens: write }))(
+                  trace.cache(),
+                ),
               });
             } catch (err) {
               request.log.warn({ err: (err as Error).message }, 'agent tracker could not save');
@@ -699,14 +723,23 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         });
 
         let upstream: Awaited<ReturnType<typeof upstreamRequest>>;
-        try {
-          upstream = await upstreamRequest(`${upstreamBase}${upstreamPath}${query}`, {
+        const send = (b: Buffer | undefined) =>
+          upstreamRequest(`${upstreamBase}${upstreamPath}${query}`, {
             method: request.method as 'GET',
             headers: upstreamHeaders(request.headers, key, secret, accountId),
-            ...(body && request.method !== 'GET' ? { body } : {}),
+            ...(b && request.method !== 'GET' ? { body: b } : {}),
             signal: ctrl.signal,
             dispatcher,
           });
+        try {
+          upstream = await send(traceBody ?? body);
+          if (traceBody && upstream.statusCode === 400) {
+            // This provider doesn't take the setting: send the CLI's request as it was.
+            await upstream.body.dump();
+            upstream = await send(body);
+            // Only when the setting was the problem; a 400 for another reason comes back again.
+            if (upstream.statusCode < 400) thinkingRefused.add(key.id);
+          }
         } catch (err) {
           record();
           if (ctrl.signal.aborted) return reply;

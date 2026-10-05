@@ -9,17 +9,19 @@ import {
   type TracePage,
   type TraceStep,
   type TraceSummary,
+  type TraceTool,
   type TrackerStatus,
 } from '@agentbox/shared';
 import type { AuditLog } from '../audit/audit.ts';
 import type { Db } from '../db/client.ts';
-import { agentTrace, setting } from '../db/schema.ts';
+import { agentTrace, agentTraceBlob, setting } from '../db/schema.ts';
 import { iso, type Clock } from '../lib/clock.ts';
 import type { SecretBox } from '../lib/crypto.ts';
 import { newId } from '../lib/ids.ts';
 
 const SETTING_KEY = 'agentTracker';
 const CONTEXT = 'agent_trace.events';
+const BLOB = 'agent_trace.blob';
 
 type Row = typeof agentTrace.$inferSelect;
 
@@ -34,7 +36,11 @@ export interface TraceInput {
   durationMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
   steps: TraceStep[];
+  system?: string | null;
+  tools?: TraceTool[];
 }
 
 export class Tracker {
@@ -87,6 +93,9 @@ export class Tracker {
     const counts: Record<string, number> = {};
     for (const s of steps) counts[s.type] = (counts[s.type] ?? 0) + 1;
     const id = newId();
+    const tools = input.tools ?? [];
+    const systemHash = input.system ? this.#putBlob(input.system) : null;
+    const toolsHash = tools.length ? this.#putBlob(JSON.stringify(tools)) : null;
     this.#db
       .insert(agentTrace)
       .values({
@@ -101,12 +110,68 @@ export class Tracker {
         durationMs: input.durationMs,
         inputTokens: input.inputTokens,
         outputTokens: input.outputTokens,
+        cacheReadTokens: input.cacheReadTokens ?? null,
+        cacheWriteTokens: input.cacheWriteTokens ?? null,
+        systemHash,
+        toolsHash,
+        toolCount: tools.length,
+        mcpToolCount: tools.filter((t) => t.kind === 'mcp').length,
         counts,
         eventsEnc: this.#box.encrypt(JSON.stringify(steps), `${CONTEXT}:${id}`),
       })
       .run();
     // Trim now and then rather than on every save.
     if (++this.#saved % 100 === 1) this.trim();
+  }
+
+  /** Saves a system prompt or tool list once; returns its key. */
+  #putBlob(text: string): string {
+    const hash = this.#box.mac(text, BLOB);
+    const known = this.#db
+      .select({ hash: agentTraceBlob.hash })
+      .from(agentTraceBlob)
+      .where(eq(agentTraceBlob.hash, hash))
+      .get();
+    if (!known) {
+      this.#db
+        .insert(agentTraceBlob)
+        .values({
+          hash,
+          enc: this.#box.encrypt(text, `${BLOB}:${hash}`),
+          createdAt: this.#clock.now(),
+        })
+        .onConflictDoNothing()
+        .run();
+    }
+    return hash;
+  }
+
+  #getBlob(hash: string | null): string | null {
+    if (!hash) return null;
+    const r = this.#db.select().from(agentTraceBlob).where(eq(agentTraceBlob.hash, hash)).get();
+    if (!r) return null;
+    try {
+      return this.#box.decrypt(r.enc, `${BLOB}:${hash}`);
+    } catch {
+      return null;
+    }
+  }
+
+  #tools(hash: string | null): TraceTool[] {
+    const text = this.#getBlob(hash);
+    if (!text) return [];
+    try {
+      return JSON.parse(text) as TraceTool[];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Deletes system prompts and tool lists no entry uses any more. */
+  #dropUnusedBlobs(): void {
+    this.#db.run(
+      sql`DELETE FROM agent_trace_blob WHERE hash NOT IN (SELECT system_hash FROM agent_trace WHERE system_hash IS NOT NULL) AND hash NOT IN (SELECT tools_hash FROM agent_trace WHERE tools_hash IS NOT NULL)`,
+    );
   }
 
   /** Keeps at most TRACE_LIMITS.maxEntries, dropping the oldest. */
@@ -119,10 +184,12 @@ export class Tracker {
       .offset(TRACE_LIMITS.maxEntries)
       .get();
     if (!cutoff) return 0;
-    return this.#db
+    const n = this.#db
       .delete(agentTrace)
       .where(sql`${agentTrace.ts} <= ${cutoff.ts}`)
       .run().changes;
+    this.#dropUnusedBlobs();
+    return n;
   }
 
   #steps(r: Row): TraceStep[] {
@@ -150,6 +217,11 @@ export class Tracker {
       durationMs: r.durationMs,
       inputTokens: r.inputTokens,
       outputTokens: r.outputTokens,
+      cacheReadTokens: r.cacheReadTokens,
+      cacheWriteTokens: r.cacheWriteTokens,
+      toolCount: r.toolCount,
+      mcpToolCount: r.mcpToolCount,
+      hasSystem: r.systemHash !== null,
       counts: r.counts,
       preview,
       note: r.note,
@@ -189,7 +261,12 @@ export class Tracker {
     const r = this.#db.select().from(agentTrace).where(eq(agentTrace.id, id)).get();
     if (!r) return null;
     const steps = this.#steps(r);
-    return { ...this.#summary(r, steps), steps };
+    return {
+      ...this.#summary(r, steps),
+      steps,
+      system: this.#getBlob(r.systemHash),
+      tools: this.#tools(r.toolsHash),
+    };
   }
 
   setNote(id: string, note: string): TraceEntry | null {
@@ -209,6 +286,7 @@ export class Tracker {
         : ids.length === 0
           ? 0
           : this.#db.delete(agentTrace).where(inArray(agentTrace.id, ids)).run().changes;
+    if (n > 0) this.#dropUnusedBlobs();
     if (n > 0)
       this.#audit.record({
         actor,
@@ -242,6 +320,8 @@ export class Tracker {
       'status',
       'input_tokens',
       'output_tokens',
+      'cache_read_tokens',
+      'cache_write_tokens',
       'note',
       'step',
       'type',
@@ -249,8 +329,10 @@ export class Tracker {
       'content',
     ];
     const lines = [head.join(',')];
+    // A system prompt or tool list is written out in full the first time only.
+    const firstUse = new Map<string, string>();
     for (const r of rows) {
-      this.#steps(r).forEach((s, i) => {
+      const row = (step: number, type: string, name: string, text: string) => {
         lines.push(
           [
             iso(r.ts),
@@ -262,15 +344,33 @@ export class Tracker {
             r.status,
             r.inputTokens,
             r.outputTokens,
+            r.cacheReadTokens,
+            r.cacheWriteTokens,
             r.note,
-            i + 1,
-            s.type,
-            s.name ?? '',
-            s.text,
+            step,
+            type,
+            name,
+            text,
           ]
             .map(csvCell)
             .join(','),
         );
+      };
+      const shared = (hash: string | null, type: string, render: (text: string) => string) => {
+        if (!hash) return;
+        const seen = firstUse.get(hash);
+        if (seen) {
+          row(0, type, '', `(same as entry ${seen})`);
+          return;
+        }
+        firstUse.set(hash, r.id);
+        const text = this.#getBlob(hash);
+        if (text !== null) row(0, type, '', render(text));
+      };
+      shared(r.systemHash, 'system', (t) => t);
+      shared(r.toolsHash, 'tools', (t) => toolList(parseTools(t)));
+      this.#steps(r).forEach((s, i) => {
+        row(i + 1, s.type, s.name ?? '', s.text);
       });
     }
     this.#audit.record({
@@ -282,6 +382,25 @@ export class Tracker {
     // A byte order mark, so Excel reads it as UTF-8.
     return { csv: `\uFEFF${lines.join('\r\n')}\r\n`, entries: rows.length };
   }
+}
+
+function parseTools(text: string): TraceTool[] {
+  try {
+    return JSON.parse(text) as TraceTool[];
+  } catch {
+    return [];
+  }
+}
+
+/** One line per tool: "server · name: what it does". */
+export function toolList(tools: TraceTool[]): string {
+  return tools
+    .map((t) => {
+      const name = t.kind === 'mcp' ? `MCP ${t.server ?? ''} · ${t.name}` : t.name;
+      const about = t.description.split('\n')[0]?.slice(0, 200) ?? '';
+      return about ? `${name}: ${about}` : name;
+    })
+    .join('\n');
 }
 
 /** A CSV cell. Cells a spreadsheet would run as a formula start with a quote mark. */

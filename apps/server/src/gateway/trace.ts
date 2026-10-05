@@ -8,7 +8,7 @@
  * streams. Each request carries the whole conversation, so only the part after
  * the model's last turn is taken from it: the earlier part was saved before.
  */
-import { TRACE_LIMITS, type TraceStep } from '@agentbox/shared';
+import { TRACE_LIMITS, type TraceStep, type TraceTool } from '@agentbox/shared';
 
 type Json = Record<string, unknown>;
 
@@ -287,7 +287,45 @@ export class TraceCollector {
     const v = safeJson(text);
     return v === null ? [] : responseFromJson(v);
   }
+
+  /** Input tokens served from (read) and written to the provider's prompt cache. */
+  cache(): { read: number | null; write: number | null } {
+    const out: { read: number | null; write: number | null } = { read: null, write: null };
+    if (this.#overflow) return out;
+    const text = Buffer.concat(this.#chunks).toString('utf8');
+    const objects =
+      text.trimStart().startsWith('{') && safeJson(text) !== null
+        ? [safeJson(text)]
+        : text
+            .split('\n')
+            .map((l) => l.replace(/\r$/, ''))
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => safeJson(l.slice(5).trim()));
+    for (const o of objects) {
+      const e = obj(o);
+      if (!e) continue;
+      const u =
+        obj(e['usage']) ??
+        obj(obj(e['message'])?.['usage']) ??
+        obj(obj(e['response'])?.['usage']) ??
+        obj(e['usageMetadata']);
+      if (!u) continue;
+      const read =
+        num(u['cache_read_input_tokens']) ??
+        num(obj(u['input_tokens_details'])?.['cached_tokens']) ??
+        num(obj(u['prompt_tokens_details'])?.['cached_tokens']) ??
+        num(u['cached_tokens']) ??
+        num(u['cachedContentTokenCount']);
+      const write = num(u['cache_creation_input_tokens']);
+      if (read !== null) out.read = read;
+      if (write !== null) out.write = write;
+    }
+    return out;
+  }
 }
+
+const num = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null;
 
 function responseFromJson(value: unknown): TraceStep[] {
   const v = obj(value);
@@ -493,4 +531,197 @@ export function isModelCall(method: string, path: string): boolean {
   if (method !== 'POST') return false;
   if (/count_tokens|\/compact$|\/embeddings/.test(path)) return false;
   return /\/messages$|\/responses$|\/chat\/completions$|:(stream)?generateContent$/i.test(path);
+}
+
+// ── The agent's setup: system prompt and tools ────────────────────────────
+
+export interface RequestContext {
+  system: string | null;
+  tools: TraceTool[];
+}
+
+function schemaText(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  const t = asText(v);
+  return t.length > TRACE_LIMITS.toolDescriptionMax
+    ? `${t.slice(0, TRACE_LIMITS.toolDescriptionMax)}…`
+    : t;
+}
+
+function describe(v: unknown): string {
+  const t = str(v);
+  return t.length > TRACE_LIMITS.toolDescriptionMax
+    ? `${t.slice(0, TRACE_LIMITS.toolDescriptionMax)}…`
+    : t;
+}
+
+/** A named tool, sorted into an MCP tool or an ordinary one. */
+function namedTool(name: string, description: unknown, schema: unknown): TraceTool {
+  if (name.startsWith('mcp__')) {
+    const [, server = '', ...tool] = name.split('__');
+    const out: TraceTool = {
+      name: tool.join('__'),
+      kind: 'mcp',
+      server,
+      description: describe(description),
+    };
+    const sc = schemaText(schema);
+    if (sc !== undefined) out.schema = sc;
+    return out;
+  }
+  const out: TraceTool = { name, kind: 'tool', description: describe(description) };
+  const sc = schemaText(schema);
+  if (sc !== undefined) out.schema = sc;
+  return out;
+}
+
+function toolsOf(v: Json): TraceTool[] {
+  const tools: TraceTool[] = [];
+  for (const t of arr(v['tools'])) {
+    const o = obj(t);
+    if (!o) continue;
+    const type = str(o['type']);
+    // Gemini: one entry holds many declarations.
+    const decls = arr(o['functionDeclarations'] ?? o['function_declarations']);
+    if (decls.length > 0) {
+      for (const d of decls) {
+        const f = obj(d);
+        if (f)
+          tools.push(
+            namedTool(
+              str(f['name']),
+              f['description'],
+              f['parameters'] ?? f['parametersJsonSchema'],
+            ),
+          );
+      }
+      continue;
+    }
+    // Chat Completions: {type: "function", function: {...}}.
+    const fn = obj(o['function']);
+    if (fn) {
+      tools.push(namedTool(str(fn['name']), fn['description'], fn['parameters']));
+      continue;
+    }
+    // OpenAI Responses: a remote MCP server the provider calls itself.
+    if (type === 'mcp') {
+      const allowed = arr(o['allowed_tools']).map(str).filter(Boolean);
+      tools.push({
+        name: allowed.length ? allowed.join(', ') : '(all tools)',
+        kind: 'mcp',
+        server: str(o['server_label']) || str(o['server_url']),
+        description: str(o['server_description']) || str(o['server_url']),
+      });
+      continue;
+    }
+    // Anthropic MCP connector toolsets.
+    if (type === 'mcp_toolset') {
+      tools.push({
+        name: '(all tools)',
+        kind: 'mcp',
+        server: str(o['mcp_server_name']),
+        description: '',
+      });
+      continue;
+    }
+    const name = str(o['name']);
+    if (!name && type) {
+      // The provider's own tools: web_search, local_shell, code_interpreter …
+      tools.push({ name: type, kind: 'server', description: '' });
+      continue;
+    }
+    if (!name) continue;
+    if (type && type !== 'function' && type !== 'custom' && !('input_schema' in o)) {
+      // Anthropic's own tools (bash_20250124, web_search_20260209 …) carry a name and a type.
+      tools.push({ name, kind: 'server', description: type });
+      continue;
+    }
+    tools.push(
+      namedTool(name, o['description'], o['input_schema'] ?? o['parameters'] ?? o['format']),
+    );
+  }
+  // Anthropic: remote MCP servers declared beside the tools.
+  for (const sv of arr(v['mcp_servers'])) {
+    const o = obj(sv);
+    if (o && !tools.some((t) => t.kind === 'mcp' && t.server === str(o['name']))) {
+      tools.push({
+        name: '(all tools)',
+        kind: 'mcp',
+        server: str(o['name']),
+        description: str(o['url']),
+      });
+    }
+  }
+  return tools.slice(0, TRACE_LIMITS.toolsMax);
+}
+
+function systemOf(v: Json): string | null {
+  const parts: string[] = [];
+  // Anthropic: "system" as text or blocks.
+  if (typeof v['system'] === 'string') parts.push(v['system']);
+  else parts.push(...arr(v['system']).map((b) => str(obj(b)?.['text'])));
+  // OpenAI Responses.
+  parts.push(str(v['instructions']));
+  // Gemini.
+  const si = obj(v['systemInstruction'] ?? v['system_instruction']);
+  if (si) parts.push(...arr(si['parts']).map((p) => str(obj(p)?.['text'])));
+  // Chat Completions (and Responses input): system and developer messages.
+  const msgs = Array.isArray(v['messages']) ? v['messages'] : arr(v['input']);
+  for (const m of msgs) {
+    const o = obj(m);
+    if (o && (o['role'] === 'system' || o['role'] === 'developer'))
+      parts.push(textOfContent(o['content']));
+  }
+  const text = parts.filter(Boolean).join('\n\n');
+  if (!text) return null;
+  return text.length > TRACE_LIMITS.systemMax
+    ? `${text.slice(0, TRACE_LIMITS.systemMax)}… [cut, ${String(text.length)} characters in all]`
+    : text;
+}
+
+/** The system prompt and the tools (MCP ones included) the agent gave the model. */
+export function requestContext(body: Buffer | undefined): RequestContext {
+  if (!body || body.length === 0 || body[0] !== 0x7b) return { system: null, tools: [] };
+  const v = obj(safeJson(body.toString('utf8')));
+  if (!v) return { system: null, tools: [] };
+  return { system: systemOf(v), tools: toolsOf(v) };
+}
+
+// ── Asking for readable thinking ──────────────────────────────────────────
+
+/**
+ * While the tracker is on, asks the provider to send the model's thinking as
+ * readable text where it would otherwise leave it out:
+ * - Claude (Opus 4.7 and newer leave thinking empty unless asked): thinking.display = "summarized".
+ * - OpenAI Responses (Codex): reasoning.summary = "auto".
+ * - Gemini: thinkingConfig.includeThoughts = true.
+ * Only settings the agent already sent are changed, so a model that doesn't
+ * think is never asked to. Returns null when nothing needs changing.
+ */
+export function withVisibleThinking(body: Buffer | undefined): Buffer | null {
+  if (!body || body.length === 0 || body[0] !== 0x7b) return null;
+  const v = obj(safeJson(body.toString('utf8')));
+  if (!v) return null;
+  let changed = false;
+  const thinking = obj(v['thinking']);
+  if (thinking && (thinking['type'] === 'adaptive' || thinking['type'] === 'enabled')) {
+    if (thinking['display'] !== 'summarized') {
+      thinking['display'] = 'summarized';
+      changed = true;
+    }
+  }
+  const reasoning = obj(v['reasoning']);
+  if (reasoning && 'input' in v) {
+    const summary = reasoning['summary'];
+    if (summary === undefined || summary === null || summary === 'none') {
+      reasoning['summary'] = 'auto';
+      changed = true;
+    }
+  }
+  const tc = obj(obj(v['generationConfig'])?.['thinkingConfig']);
+  if (tc && tc['includeThoughts'] !== true && tc['thinkingBudget'] !== 0) {
+    tc['includeThoughts'] = true;
+    changed = true;
+  }
+  return changed ? Buffer.from(JSON.stringify(v), 'utf8') : null;
 }

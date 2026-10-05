@@ -6,8 +6,15 @@ import type {
   TracePage,
   TrackerStatus,
 } from '@agentbox/shared';
-import { agentTrace, auditLog } from '../src/db/schema.ts';
-import { TraceCollector, isModelCall, requestSteps, toolStep } from '../src/gateway/trace.ts';
+import { agentTrace, agentTraceBlob, auditLog } from '../src/db/schema.ts';
+import {
+  TraceCollector,
+  isModelCall,
+  requestContext,
+  requestSteps,
+  toolStep,
+  withVisibleThinking,
+} from '../src/gateway/trace.ts';
 import { csvCell } from '../src/gateway/tracker.ts';
 import { FakeProvider } from './helpers/fake-provider.ts';
 import { Harness, RP_ID, type Browser } from './helpers/harness.ts';
@@ -233,6 +240,171 @@ describe('reading what an agent did', () => {
     expect(toolStep('Read', { file_path: '/a' }).type).toBe('tool_call');
   });
 
+  it('reads the system prompt and the tools, MCP ones included, for every CLI', () => {
+    const claude = requestContext(
+      buf({
+        model: 'claude-opus-5-5',
+        system: [
+          { type: 'text', text: 'You are Claude Code.' },
+          { type: 'text', text: 'Be careful.' },
+        ],
+        tools: [
+          { name: 'Bash', description: 'Run a command\nmore', input_schema: { type: 'object' } },
+          { name: 'mcp__github__create_issue', description: 'Make an issue', input_schema: {} },
+          { type: 'web_search_20260209', name: 'web_search' },
+        ],
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    );
+    expect(claude.system).toBe('You are Claude Code.\n\nBe careful.');
+    expect(claude.tools).toEqual([
+      {
+        name: 'Bash',
+        kind: 'tool',
+        description: 'Run a command\nmore',
+        schema: JSON.stringify({ type: 'object' }, null, 2),
+      },
+      {
+        name: 'create_issue',
+        kind: 'mcp',
+        server: 'github',
+        description: 'Make an issue',
+        schema: '{}',
+      },
+      { name: 'web_search', kind: 'server', description: 'web_search_20260209' },
+    ]);
+
+    const codex = requestContext(
+      buf({
+        model: 'gpt-5-codex',
+        instructions: 'You are Codex.',
+        input: [
+          {
+            type: 'message',
+            role: 'developer',
+            content: [{ type: 'input_text', text: 'AGENTS.md rules' }],
+          },
+        ],
+        tools: [
+          { type: 'function', name: 'shell', description: 'Runs a command', parameters: {} },
+          { type: 'mcp', server_label: 'docs', server_url: 'https://docs.example/mcp' },
+          { type: 'local_shell' },
+        ],
+      }),
+    );
+    expect(codex.system).toBe('You are Codex.\n\nAGENTS.md rules');
+    expect(codex.tools.map((t) => [t.kind, t.server ?? '', t.name])).toEqual([
+      ['tool', '', 'shell'],
+      ['mcp', 'docs', '(all tools)'],
+      ['server', '', 'local_shell'],
+    ]);
+
+    const chat = requestContext(
+      buf({
+        model: 'kimi-k2',
+        messages: [
+          { role: 'system', content: 'You are Kimi.' },
+          { role: 'user', content: 'hi' },
+        ],
+        tools: [
+          { type: 'function', function: { name: 'read', description: 'Read', parameters: {} } },
+        ],
+      }),
+    );
+    expect(chat.system).toBe('You are Kimi.');
+    expect(chat.tools.map((t) => t.name)).toEqual(['read']);
+
+    const gemini = requestContext(
+      buf({
+        systemInstruction: { parts: [{ text: 'You are Gemini CLI.' }] },
+        contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+        tools: [{ functionDeclarations: [{ name: 'glob', description: 'Find files' }] }],
+      }),
+    );
+    expect(gemini.system).toBe('You are Gemini CLI.');
+    expect(gemini.tools.map((t) => t.name)).toEqual(['glob']);
+  });
+
+  it('asks for readable thinking only where the agent already turned thinking on', () => {
+    const json = (b: Buffer | null) =>
+      b ? (JSON.parse(b.toString()) as Record<string, unknown>) : null;
+    expect(
+      json(withVisibleThinking(buf({ thinking: { type: 'adaptive' }, messages: [] })))?.[
+        'thinking'
+      ],
+    ).toEqual({ type: 'adaptive', display: 'summarized' });
+    expect(
+      withVisibleThinking(
+        buf({ thinking: { type: 'adaptive', display: 'summarized' }, messages: [] }),
+      ),
+    ).toBeNull();
+    // No thinking asked for, or thinking switched off: left alone.
+    expect(withVisibleThinking(buf({ messages: [] }))).toBeNull();
+    expect(
+      withVisibleThinking(buf({ thinking: { type: 'between_tools' }, messages: [] })),
+    ).toBeNull();
+    // Codex.
+    expect(
+      json(withVisibleThinking(buf({ input: 'hi', reasoning: { effort: 'high' } })))?.['reasoning'],
+    ).toEqual({ effort: 'high', summary: 'auto' });
+    expect(
+      withVisibleThinking(buf({ input: 'hi', reasoning: { summary: 'detailed' } })),
+    ).toBeNull();
+    // Gemini.
+    expect(
+      json(
+        withVisibleThinking(
+          buf({ contents: [], generationConfig: { thinkingConfig: { thinkingBudget: -1 } } }),
+        ),
+      )?.['generationConfig'],
+    ).toEqual({ thinkingConfig: { thinkingBudget: -1, includeThoughts: true } });
+    expect(
+      withVisibleThinking(
+        buf({ contents: [], generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }),
+      ),
+    ).toBeNull();
+  });
+
+  it('reads how much of the prompt came from the cache', () => {
+    const claude = new TraceCollector();
+    claude.push(
+      Buffer.from(
+        sse([
+          {
+            type: 'message_start',
+            message: {
+              usage: {
+                input_tokens: 4,
+                cache_read_input_tokens: 9000,
+                cache_creation_input_tokens: 120,
+              },
+            },
+          },
+          { type: 'message_delta', usage: { output_tokens: 5 } },
+        ]),
+      ),
+    );
+    expect(claude.cache()).toEqual({ read: 9000, write: 120 });
+    const codex = new TraceCollector();
+    codex.push(
+      Buffer.from(
+        sse([
+          {
+            type: 'response.completed',
+            response: {
+              output: [],
+              usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 7 } },
+            },
+          },
+        ]),
+      ),
+    );
+    expect(codex.cache()).toEqual({ read: 7, write: null });
+    const gemini = new TraceCollector();
+    gemini.push(buf({ candidates: [], usageMetadata: { cachedContentTokenCount: 3 } }));
+    expect(gemini.cache()).toEqual({ read: 3, write: null });
+  });
+
   it('keeps spreadsheet formulas out of the CSV', () => {
     expect(csvCell('=HYPERLINK("x")')).toBe(`"'=HYPERLINK(""x"")"`);
     expect(csvCell('a,b')).toBe('"a,b"');
@@ -275,7 +447,7 @@ describe('agent tracker', () => {
     return res.json<MachineCreated>().pass;
   }
 
-  const ask = (pass: string, prompt: string) =>
+  const ask = (pass: string, prompt: string, extra: Record<string, unknown> = {}) =>
     h.app.inject({
       method: 'POST',
       url: '/gw/anthropic/v1/messages',
@@ -291,6 +463,7 @@ describe('agent tracker', () => {
         max_tokens: 64,
         stream: true,
         messages: [{ role: 'user', content: prompt }],
+        ...extra,
       }),
     });
 
@@ -408,6 +581,81 @@ describe('agent tracker', () => {
         'tracker.deleted',
       ]),
     );
+  });
+
+  it('saves the system prompt and tools once, shows the thinking, and counts the cache', async () => {
+    const pass = await machine();
+    const setup = {
+      system: [{ type: 'text', text: 'You are Claude Code. Secret instructions.' }],
+      tools: [
+        { name: 'Bash', description: 'Run a command', input_schema: { type: 'object' } },
+        { name: 'mcp__github__create_issue', description: 'Make an issue', input_schema: {} },
+      ],
+      thinking: { type: 'adaptive' },
+    };
+    // Off: the request goes out exactly as the CLI sent it.
+    await ask(pass, 'before', setup);
+    expect(JSON.parse(provider.seen.at(-1)!.body).thinking).toEqual({ type: 'adaptive' });
+
+    await h.reauth(laptop);
+    await send('PUT', '/api/tracker', { enabled: true });
+    expect((await ask(pass, 'first', setup)).statusCode).toBe(200);
+    expect((await ask(pass, 'second', setup)).statusCode).toBe(200);
+    // On: the provider is asked for readable thinking.
+    expect(JSON.parse(provider.seen.at(-1)!.body).thinking).toEqual({
+      type: 'adaptive',
+      display: 'summarized',
+    });
+
+    const page = (await laptop.get('/api/tracker/entries')).json<TracePage>();
+    expect(page.entries[0]).toMatchObject({
+      preview: 'second',
+      hasSystem: true,
+      toolCount: 2,
+      mcpToolCount: 1,
+      cacheReadTokens: 3,
+    });
+    const entry = (
+      await laptop.get(`/api/tracker/entries/${page.entries[0]!.id}`)
+    ).json<TraceEntry>();
+    expect(entry.system).toBe('You are Claude Code. Secret instructions.');
+    expect(entry.tools.map((t) => [t.kind, t.server ?? '', t.name])).toEqual([
+      ['tool', '', 'Bash'],
+      ['mcp', 'github', 'create_issue'],
+    ]);
+    // One saved copy each, encrypted, shared by both entries.
+    const blobs = h.services.db.select().from(agentTraceBlob).all();
+    expect(blobs).toHaveLength(2);
+    expect(blobs.map((b) => b.enc).join()).not.toContain('Secret instructions');
+    expect(blobs.map((b) => b.hash).join()).not.toContain('Secret');
+
+    const { csv } = (await laptop.post('/api/tracker/export', { ids: 'all' })).json<{
+      csv: string;
+    }>();
+    expect(csv.split('\r\n')[0]).toContain('cache_read_tokens,cache_write_tokens');
+    expect(csv).toContain('system,,You are Claude Code. Secret instructions.');
+    expect(csv).toContain('MCP github · create_issue: Make an issue');
+    expect(csv).toContain(`system,,(same as entry ${page.entries[1]!.id})`);
+
+    // Deleting the entries deletes the copies too.
+    await laptop.post('/api/tracker/delete', { ids: 'all' });
+    expect(h.services.db.select().from(agentTraceBlob).all()).toHaveLength(0);
+  });
+
+  it('sends the request unchanged when the provider refuses the thinking setting', async () => {
+    const pass = await machine();
+    await h.reauth(laptop);
+    await send('PUT', '/api/tracker', { enabled: true });
+    provider.rejectDisplay = true;
+    const thinking = { thinking: { type: 'adaptive' } };
+    const first = await ask(pass, 'one', thinking);
+    expect(first.statusCode, first.body).toBe(200);
+    const before = provider.seen.length;
+    expect((await ask(pass, 'two', thinking)).statusCode).toBe(200);
+    // Not tried again for this key: one request, unchanged.
+    expect(provider.seen.length - before).toBe(1);
+    expect(JSON.parse(provider.seen.at(-1)!.body).thinking).toEqual({ type: 'adaptive' });
+    expect((await laptop.get('/api/tracker')).json<TrackerStatus>().entries).toBe(2);
   });
 
   it('is only for signed-in devices', async () => {
