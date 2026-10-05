@@ -142,8 +142,18 @@ export class FakeProvider {
           path === '/v1beta/models' ||
           path === '/backend-api/codex/models'
         ) {
+          const anthropic = req.headers['x-api-key'] || req.headers['anthropic-beta'];
           if (this.refuse) json(this.refuse.status, this.refuse.body);
-          else json(200, { data: [{ id: 'model-1' }] });
+          else if (anthropic && !req.headers['anthropic-version']) {
+            // What Anthropic answers without an API version.
+            json(400, {
+              type: 'error',
+              error: {
+                type: 'invalid_request_error',
+                message: 'anthropic-version: header is required',
+              },
+            });
+          } else json(200, { data: [{ id: 'model-1' }] });
           return;
         }
         if (path === '/slow') {

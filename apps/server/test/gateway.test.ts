@@ -1247,12 +1247,27 @@ describe('testing a key', () => {
     const seen = provider.last();
     expect(seen.url).toBe('/v1/models?limit=1');
     expect(seen.headers['x-api-key']).toBe(REAL_KEY);
+    expect(seen.headers['anthropic-version']).toBe('2023-06-01');
     const actions = h.services.db
       .select()
       .from(auditLog)
       .all()
       .map((row) => row.action);
     expect(actions).toContain('ai_key.tested');
+  });
+
+  it('tests a Claude Pro/Max token the way Claude Code asks', async () => {
+    const key = await addKey({
+      preset: 'anthropic-subscription',
+      slug: 'claude',
+      name: 'Claude Max',
+    });
+    const res = await laptop.post(`/api/gateway/keys/${key.id}/test`);
+    expect(res.json<KeyCheckResult>(), res.body).toMatchObject({ ok: true, status: 200 });
+    const seen = provider.last();
+    expect(seen.headers['anthropic-version']).toBe('2023-06-01');
+    expect(seen.headers['anthropic-beta']).toContain('oauth');
+    expect(seen.headers['authorization']).toMatch(/^Bearer /);
   });
 
   it('passes on what the provider says when it refuses the key', async () => {

@@ -19,6 +19,9 @@ const TIMEOUT_MS = 20_000;
 /** Codex sends its version when it asks ChatGPT which models a plan has. */
 const CODEX_VERSION = '0.160.0';
 
+/** Anthropic answers 400 to any request without an API version. Claude Code sends this one. */
+const ANTHROPIC_VERSION = '2023-06-01';
+
 /** The smallest sensible question for this kind of key: "which models do I have?". */
 function probePath(key: AiKeyRow): string {
   switch (key.auth) {
@@ -91,6 +94,10 @@ export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResu
   }
 
   const path = probePath(key);
+  const asked: Record<string, string> = { accept: 'application/json' };
+  if (key.auth === 'x-api-key' || key.auth === 'anthropic-oauth') {
+    asked['anthropic-version'] = ANTHROPIC_VERSION;
+  }
   let host: string;
   try {
     host = new URL(upstream).host;
@@ -102,7 +109,7 @@ export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResu
   try {
     const res = await upstreamRequest(`${upstream}${path}`, {
       method: 'GET',
-      headers: upstreamHeaders({ accept: 'application/json' }, key, secret, accountId),
+      headers: upstreamHeaders(asked, key, secret, accountId),
       headersTimeout: TIMEOUT_MS,
       bodyTimeout: TIMEOUT_MS,
     });
