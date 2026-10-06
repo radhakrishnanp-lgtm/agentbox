@@ -84,9 +84,13 @@ export const vaultResetSchema = z.object({ confirm: z.literal('RESET') });
 export const TERMINAL_LIMITS = {
   maxFrameBytes: 64 * 1024,
   inputBytesPerSecond: 256 * 1024,
-  /** Output the browser has not confirmed yet; above this, reading from the terminal pauses. */
-  unackedHighBytes: 1024 * 1024,
-  unackedLowBytes: 256 * 1024,
+  /**
+   * Output the browser has not drawn yet; above this, reading from the terminal pauses.
+   * Kept small so a busy screen can't queue seconds of stale output ahead of the echo
+   * of what you type: tmux skips the frames instead.
+   */
+  unackedHighBytes: 128 * 1024,
+  unackedLowBytes: 32 * 1024,
   maxTerminals: 20,
 } as const;
 

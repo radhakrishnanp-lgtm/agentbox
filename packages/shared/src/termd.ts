@@ -59,7 +59,11 @@ export type TermdErrorCode =
 export type TermdResponse<T = unknown> =
   ({ ok: true } & T) | { ok: false; error: { code: TermdErrorCode; message: string } };
 
-export const TERMD_FRAME = { data: 1, resize: 2, exit: 3 } as const;
+/**
+ * Frame types. `pause` / `resume` come from agentbox-web when the browser falls
+ * behind, so termd stops reading the terminal at once (tmux then skips frames).
+ */
+export const TERMD_FRAME = { data: 1, resize: 2, exit: 3, pause: 4, resume: 5 } as const;
 export const TERMD_MAX_REQUEST_BYTES = 16 * 1024;
 export const TERMD_FRAME_HEADER = 5;
 /** A single frame never carries more than this; bigger output is split. */
