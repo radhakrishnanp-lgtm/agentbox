@@ -689,6 +689,26 @@ export function requestContext(body: Buffer | undefined): RequestContext {
 
 // ── Asking for readable thinking ──────────────────────────────────────────
 
+/** Claude models that think whether or not the request turns thinking on. */
+const ALWAYS_THINKS = /^claude-(opus-5|fable-5|mythos-5|sonnet-5)/;
+
+/** Anthropic beta flags that hide the thinking text (Claude Code sends one unless verbose). */
+const HIDES_THINKING = /^redact-thinking/i;
+
+/**
+ * The anthropic-beta header without the flags that hide thinking, or null when
+ * it has none of them.
+ */
+export function withoutHiddenThinking(beta: string | undefined): string | null {
+  if (!beta) return null;
+  const flags = beta
+    .split(',')
+    .map((b) => b.trim())
+    .filter(Boolean);
+  const kept = flags.filter((f) => !HIDES_THINKING.test(f));
+  return kept.length === flags.length ? null : kept.join(',');
+}
+
 /**
  * While the tracker is on, asks the provider to send the model's thinking as
  * readable text where it would otherwise leave it out:
@@ -704,6 +724,16 @@ export function withVisibleThinking(body: Buffer | undefined): Buffer | null {
   if (!v) return null;
   let changed = false;
   const thinking = obj(v['thinking']);
+  if (
+    thinking === null &&
+    !('thinking' in v) &&
+    Array.isArray(v['messages']) &&
+    ALWAYS_THINKS.test(str(v['model']))
+  ) {
+    // These models think even when the request says nothing; ask for the text.
+    v['thinking'] = { type: 'adaptive', display: 'summarized' };
+    changed = true;
+  }
   if (thinking && (thinking['type'] === 'adaptive' || thinking['type'] === 'enabled')) {
     if (thinking['display'] !== 'summarized') {
       thinking['display'] = 'summarized';

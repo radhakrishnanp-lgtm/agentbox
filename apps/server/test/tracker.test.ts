@@ -14,6 +14,7 @@ import {
   requestSteps,
   toolStep,
   withVisibleThinking,
+  withoutHiddenThinking,
 } from '../src/gateway/trace.ts';
 import { csvCell } from '../src/gateway/tracker.ts';
 import { FakeProvider } from './helpers/fake-provider.ts';
@@ -340,6 +341,18 @@ describe('reading what an agent did', () => {
     ).toBeNull();
     // No thinking asked for, or thinking switched off: left alone.
     expect(withVisibleThinking(buf({ messages: [] }))).toBeNull();
+    expect(withVisibleThinking(buf({ model: 'claude-opus-4-8', messages: [] }))).toBeNull();
+    // Models that always think get asked for the text even when the request says nothing.
+    expect(
+      json(withVisibleThinking(buf({ model: 'claude-opus-5-5', messages: [] })))?.['thinking'],
+    ).toEqual({ type: 'adaptive', display: 'summarized' });
+    // Claude Code's flag that hides thinking is dropped; other flags stay.
+    expect(withoutHiddenThinking('oauth-2025-04-20, redact-thinking-2026-02-12,foo')).toBe(
+      'oauth-2025-04-20,foo',
+    );
+    expect(withoutHiddenThinking('redact-thinking-2026-02-12')).toBe('');
+    expect(withoutHiddenThinking('oauth-2025-04-20')).toBeNull();
+    expect(withoutHiddenThinking(undefined)).toBeNull();
     expect(
       withVisibleThinking(buf({ thinking: { type: 'between_tools' }, messages: [] })),
     ).toBeNull();
@@ -457,6 +470,7 @@ describe('agent tracker', () => {
         'x-forwarded-proto': 'https',
         'content-type': 'application/json',
         'x-api-key': pass,
+        'anthropic-beta': 'redact-thinking-2026-02-12,foo-2026-01-01',
       },
       payload: JSON.stringify({
         model: 'claude-sonnet-4-5',
@@ -596,6 +610,9 @@ describe('agent tracker', () => {
     // Off: the request goes out exactly as the CLI sent it.
     await ask(pass, 'before', setup);
     expect(JSON.parse(provider.seen.at(-1)!.body).thinking).toEqual({ type: 'adaptive' });
+    expect(provider.seen.at(-1)!.headers['anthropic-beta']).toBe(
+      'redact-thinking-2026-02-12,foo-2026-01-01',
+    );
 
     await h.reauth(laptop);
     await send('PUT', '/api/tracker', { enabled: true });
@@ -628,6 +645,7 @@ describe('agent tracker', () => {
       type: 'adaptive',
       display: 'summarized',
     });
+    expect(provider.seen.at(-1)!.headers['anthropic-beta']).toBe('foo-2026-01-01');
 
     const page = (await laptop.get('/api/tracker/entries')).json<TracePage>();
     expect(page.entries[0]).toMatchObject({

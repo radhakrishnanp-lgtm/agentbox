@@ -8,7 +8,7 @@ import type {
   TraceTool,
   TrackerStatus,
 } from '@agentbox/shared';
-import { Download, Eye, EyeOff, Radar, RefreshCw, Trash2, X } from 'lucide-react';
+import { Check, Copy, Download, Eye, EyeOff, Radar, RefreshCw, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { PageHeader } from '../components/Layout.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -57,6 +57,89 @@ function saveCsv(csv: string, name: string) {
 }
 
 type Pending = { kind: 'delete'; ids: string[] | 'all'; label: string } | null;
+
+/** A small "Copy" button that says "Copied" for a moment. */
+function CopyButton({ text, what, className }: { text: string; what: string; className?: string }) {
+  const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
+  useEffect(() => {
+    if (state === 'idle') return;
+    const t = setTimeout(() => {
+      setState('idle');
+    }, 1500);
+    return () => {
+      clearTimeout(t);
+    };
+  }, [state]);
+  return (
+    <button
+      type="button"
+      aria-label={`Copy ${what}`}
+      title={`Copy ${what}`}
+      onClick={(ev) => {
+        // Inside a <summary>, a click would also fold the section.
+        ev.preventDefault();
+        ev.stopPropagation();
+        navigator.clipboard.writeText(text).then(
+          () => {
+            setState('done');
+          },
+          () => {
+            setState('failed');
+          },
+        );
+      }}
+      className={cn(
+        'ml-auto inline-flex min-h-9 shrink-0 items-center gap-1 rounded-[var(--radius-input)] px-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-text focus-visible:outline-2',
+        className,
+      )}
+    >
+      {state === 'done' ? (
+        <Check className="size-4" aria-hidden />
+      ) : (
+        <Copy className="size-4" aria-hidden />
+      )}
+      <span aria-live="polite">
+        {state === 'done' ? 'Copied' : state === 'failed' ? "Couldn't copy" : 'Copy'}
+      </span>
+    </button>
+  );
+}
+
+/** Tools as plain text: name, MCP server, description and input. */
+function toolsText(tools: TraceTool[]): string {
+  return tools
+    .map((t) =>
+      [
+        t.kind === 'mcp' ? `${t.name} (MCP server ${t.server ?? ''})` : t.name,
+        t.description,
+        t.schema ? `Input:\n${t.schema}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    )
+    .join('\n\n');
+}
+
+/** A whole entry as plain text, for pasting anywhere. */
+function entryText(e: TraceEntry): string {
+  const head = [
+    `Time: ${dateTime(e.ts)} (${e.ts})`,
+    `Computer: ${e.machineName}${e.ip ? ` (${e.ip})` : ''}`,
+    `CLI: ${e.cli ?? e.keySlug}${e.model ? ` · ${e.model}` : ''}`,
+    `Status: ${String(e.status)}`,
+    `Tokens: ${String(e.inputTokens ?? 0)} in, ${String(e.outputTokens ?? 0)} out${
+      e.cacheReadTokens ? `, ${String(e.cacheReadTokens)} from cache` : ''
+    }`,
+    e.note ? `Note: ${e.note}` : '',
+  ].filter(Boolean);
+  const parts = [head.join('\n')];
+  if (e.system) parts.push(`## System prompt\n${e.system}`);
+  if (e.tools.length) parts.push(`## Tools (${String(e.tools.length)})\n${toolsText(e.tools)}`);
+  for (const st of e.steps) {
+    parts.push(`## ${STEP[st.type].label}${st.name ? ` · ${st.name}` : ''}\n${st.text}`);
+  }
+  return parts.join('\n\n');
+}
 
 const FILTER_KEY = 'agentbox.tracker.filter';
 
@@ -769,6 +852,9 @@ function EntryDetail({
               <div className="mb-1 flex items-center gap-2 text-xs">
                 <Badge tone={STEP[s.type].tone}>{STEP[s.type].label}</Badge>
                 {s.name ? <span className="font-mono text-muted">{s.name}</span> : null}
+                {s.text ? (
+                  <CopyButton text={s.text} what={STEP[s.type].label.toLowerCase()} />
+                ) : null}
               </div>
               <pre
                 className={cn(
@@ -808,6 +894,13 @@ function EntryDetail({
         <Button variant="secondary" onClick={save} loading={saving} disabled={draft === note}>
           Save note
         </Button>
+        {entry ? (
+          <CopyButton
+            text={entryText({ ...entry, note: draft })}
+            what="the whole entry"
+            className="ml-0 min-h-11 px-3 text-sm"
+          />
+        ) : null}
         <Button variant="ghost" onClick={onExport}>
           <Download className="size-4" aria-hidden />
           Export
@@ -842,6 +935,7 @@ function Context({ entry }: { entry: TraceEntry }) {
           <summary className={summaryClass}>
             <Badge>System prompt</Badge>
             <span className="text-muted">{entry.system.length.toLocaleString()} characters</span>
+            <CopyButton text={entry.system} what="system prompt" />
           </summary>
           <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words border-t border-border p-3 font-sans text-sm">
             {entry.system}
@@ -858,6 +952,7 @@ function Context({ entry }: { entry: TraceEntry }) {
                 ? ` · MCP: ${[...mcp.keys()].map((k) => k || 'unnamed').join(', ')}`
                 : ''}
             </span>
+            <CopyButton text={toolsText(entry.tools)} what="tools" />
           </summary>
           <div className="space-y-3 border-t border-border p-3">
             {[...mcp.entries()].map(([server, tools]) => (
@@ -885,14 +980,17 @@ function ToolGroup({ title, tools }: { title: string; tools: TraceTool[] }) {
         {tools.map((t, i) => (
           <li key={`${t.name}:${String(i)}`}>
             <details>
-              <summary className="cursor-pointer py-1 text-sm">
-                <span className="font-mono">{t.name}</span>
-                {t.description ? (
-                  <span className="text-muted">
-                    {' '}
-                    · {t.description.split('\n')[0]?.slice(0, 120)}
-                  </span>
-                ) : null}
+              <summary className="flex cursor-pointer items-center gap-1 py-1 text-sm">
+                <span className="min-w-0 truncate">
+                  <span className="font-mono">{t.name}</span>
+                  {t.description ? (
+                    <span className="text-muted">
+                      {' '}
+                      · {t.description.split('\n')[0]?.slice(0, 120)}
+                    </span>
+                  ) : null}
+                </span>
+                <CopyButton text={toolsText([t])} what={`tool ${t.name}`} />
               </summary>
               <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-input)] bg-surface p-2 font-mono text-xs">
                 {[t.description, t.schema ? `Input:\n${t.schema}` : '']

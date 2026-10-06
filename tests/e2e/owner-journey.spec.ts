@@ -436,6 +436,16 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await expect(traced).toBeVisible();
     await traced.click();
     await expect(page.getByText('Hello from the fake provider').first()).toBeVisible();
+    // Every block has a copy button.
+    await laptop.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: E2E_ORIGIN });
+    await page.getByRole('button', { name: 'Copy answer' }).click();
+    expect(await page.evaluate<string>('navigator.clipboard.readText()')).toBe(
+      'Hello from the fake provider',
+    );
+    await page.getByRole('button', { name: 'Copy the whole entry' }).click();
+    expect(await page.evaluate<string>('navigator.clipboard.readText()')).toContain(
+      '## Prompt\nhi',
+    );
     // The system prompt and the MCP tools the CLI offered are saved too.
     await page.getByText('System prompt', { exact: true }).click();
     await expect(page.getByText('You are the e2e CLI.')).toBeVisible();
