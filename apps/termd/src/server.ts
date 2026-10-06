@@ -34,7 +34,7 @@ function passwordOf(req: TermdRequest): string {
 export type Log = (level: 'info' | 'warn' | 'error', msg: string, extra?: object) => void;
 
 /** Socket write buffer above which the terminal stops reading (flow control). */
-const PAUSE_AT = 512 * 1024;
+const PAUSE_AT = 64 * 1024;
 /** How long a new tmux client needs before it follows resizes reliably. */
 const SETTLE_MS = 400;
 
@@ -276,6 +276,8 @@ export class Termd {
       if (!socket.destroyed) socket.end(encodeFrame(TERMD_FRAME.exit, JSON.stringify({ reason })));
     };
 
+    // The browser asked to wait (see TERMD_FRAME.pause).
+    let held = false;
     term.onData((data) => {
       if (closed) return;
       const bytes = Buffer.from(data, 'utf8');
@@ -286,7 +288,7 @@ export class Termd {
       if (socket.writableLength > PAUSE_AT) term.pause();
     });
     socket.on('drain', () => {
-      term.resume();
+      if (!held) term.resume();
     });
     term.onExit(() => {
       close('ended');
@@ -323,7 +325,13 @@ export class Termd {
       }
       for (const f of frames) {
         if (f.type === TERMD_FRAME.data) term.write(f.payload.toString('utf8'));
-        else if (f.type === TERMD_FRAME.resize) {
+        else if (f.type === TERMD_FRAME.pause) {
+          held = true;
+          term.pause();
+        } else if (f.type === TERMD_FRAME.resume) {
+          held = false;
+          if (socket.writableLength <= PAUSE_AT) term.resume();
+        } else if (f.type === TERMD_FRAME.resize) {
           try {
             const size = JSON.parse(f.payload.toString('utf8')) as {
               cols?: unknown;

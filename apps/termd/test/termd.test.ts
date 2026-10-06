@@ -40,6 +40,7 @@ function attachAndType(
   name: string,
   input: string,
   until: string,
+  hold?: { seenWhileHeld: boolean },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const s = connect(socket);
@@ -66,7 +67,17 @@ function attachAndType(
         ready = true;
         rest = head.subarray(nl + 1);
         s.write(encodeFrame(TERMD_FRAME.resize, JSON.stringify({ cols: 100, rows: 30 })));
-        setTimeout(() => s.write(encodeFrame(TERMD_FRAME.data, input)), 700);
+        setTimeout(() => {
+          // With `hold`, output stops for a second (as when the browser falls behind).
+          if (hold) s.write(encodeFrame(TERMD_FRAME.pause, ''));
+          s.write(encodeFrame(TERMD_FRAME.data, input));
+          if (hold) {
+            setTimeout(() => {
+              hold.seenWhileHeld = out.includes(until);
+              s.write(encodeFrame(TERMD_FRAME.resume, ''));
+            }, 1000);
+          }
+        }, 700);
       }
       for (const f of decoder.push(rest)) {
         if (f.type === TERMD_FRAME.data) out += f.payload.toString();
@@ -200,6 +211,21 @@ describe.skipIf(!hasTmux)('agentbox-termd', () => {
     const again = await attachAndType(config.socket, 'live', 'echo AGAIN-$((1+1))\r', 'AGAIN-2');
     expect(again).toContain('DONE-42');
     await request(config.socket, { op: 'kill', name: 'live' });
+  });
+
+  it('stops reading the terminal while agentbox-web says to wait', async () => {
+    await request(config.socket, {
+      op: 'create',
+      name: 'held',
+      preset: 'shell',
+      cols: 80,
+      rows: 24,
+    });
+    const hold = { seenWhileHeld: true };
+    const out = await attachAndType(config.socket, 'held', 'echo HELD-$((1+1))\r', 'HELD-2', hold);
+    expect(hold.seenWhileHeld).toBe(false);
+    expect(out).toContain('HELD-2');
+    await request(config.socket, { op: 'kill', name: 'held' });
   });
 
   it('runs a preset CLI and leaves a shell behind when it exits', async () => {

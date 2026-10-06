@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { expect, test, type BrowserContext, type CDPSession, type Page } from '@playwright/test';
 import { TOTP } from 'otpauth';
 import { FakeProvider } from '../../apps/server/test/helpers/fake-provider.ts';
-import { E2E_ORIGIN, e2eEnv } from './env.ts';
+import { E2E_ORIGIN, e2eEnv, e2eTermdEnv } from './env.ts';
 
 const SIGNIN_PASSWORD = 'e2e sign-in password, long enough';
 const REAL_KEY = 'sk-ant-api03-E2E-REAL-KEY-never-leaves-agentbox-wxyz';
@@ -58,6 +58,17 @@ function makeMachine() {
     rmSync(home, { recursive: true, force: true });
   };
   return { home, env, sh, cleanup };
+}
+
+/** What the e2e tmux session shows right now. */
+function tmuxScreen(name: string): string {
+  return execFileSync(
+    'tmux',
+    ['-L', e2eTermdEnv['AGENTBOX_TERMD_TMUX'] ?? '', 'capture-pane', '-p', '-t', `=${name}:`],
+    {
+      encoding: 'utf8',
+    },
+  );
 }
 
 function setupLink(): string {
@@ -518,7 +529,8 @@ ${machine.home}/.local/share:
   await page.waitForTimeout(800);
   await page.keyboard.type('echo E2E-$((40+2))');
   await page.keyboard.press('Enter');
-  await expect(page.locator('.xterm-rows')).toContainText('E2E-42');
+  // The screen is drawn with WebGL (no text in the page), so read it from tmux.
+  await expect.poll(() => tmuxScreen('e2e')).toContain('E2E-42');
   // Leaving only detaches: the session is still listed.
   await page.getByRole('link', { name: 'Back to terminals' }).click();
   await expect(page.getByText('e2e', { exact: true })).toBeVisible();

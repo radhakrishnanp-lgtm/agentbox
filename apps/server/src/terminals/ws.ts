@@ -6,7 +6,8 @@
  * - The session is re-checked every 30 s, and the connection is cut the moment
  *   the session ends (sign-out, revoke, timeout).
  * - Keystrokes count as activity; input is capped at 256 KB/s.
- * - Output is paused while the browser has too much unconfirmed data (acks).
+ * - Output is paused while the browser has too much undrawn output (acks): termd
+ *   then stops reading the terminal, so typing never waits behind a backlog.
  */
 import websocket from '@fastify/websocket';
 import type { FastifyPluginAsync } from 'fastify';
@@ -172,8 +173,9 @@ async function bridge(s: Services, ws: WebSocket, o: BridgeOptions): Promise<voi
       }
     }
     if (!paused && unacked > TERMINAL_LIMITS.unackedHighBytes) {
+      // termd stops reading the terminal itself, so nothing piles up in between.
       paused = true;
-      term.pause();
+      term.write(encodeFrame(TERMD_FRAME.pause, ''));
     }
   };
   if (rest.length) onTermData(rest);
@@ -227,7 +229,7 @@ async function bridge(s: Services, ws: WebSocket, o: BridgeOptions): Promise<voi
       unacked = Math.max(0, unacked - msg.data.bytes);
       if (paused && unacked < TERMINAL_LIMITS.unackedLowBytes) {
         paused = false;
-        term.resume();
+        term.write(encodeFrame(TERMD_FRAME.resume, ''));
       }
     }
   });

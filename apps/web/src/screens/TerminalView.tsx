@@ -3,6 +3,7 @@ import type { TerminalServerMessage } from '@agentbox/shared';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { ArrowLeft, Keyboard, RotateCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -23,8 +24,11 @@ const CLOSE_TEXT: Record<number, string> = {
   4503: "The terminal service isn't running.",
 };
 
-/** Acknowledge output in chunks so the server knows the browser keeps up. */
-const ACK_EVERY = 32 * 1024;
+/**
+ * Confirm drawn output in small steps, so the server never lets much more than
+ * the browser can draw queue up ahead of what you type.
+ */
+const ACK_EVERY = 8 * 1024;
 
 type Status = { kind: 'connecting' } | { kind: 'open' } | { kind: 'closed'; message: string };
 
@@ -85,6 +89,17 @@ export function TerminalView({ name }: { name: string }) {
       }),
     );
     t.open(el);
+    // Draw with the GPU: busy screens (grok, claude, codex) keep up far better than
+    // with the default renderer. Without WebGL, or if it is lost, fall back.
+    try {
+      const gl = new WebglAddon();
+      gl.onContextLoss(() => {
+        gl.dispose();
+      });
+      t.loadAddon(gl);
+    } catch {
+      // The default renderer still works.
+    }
     fit.fit();
     t.focus();
     term.current = t;
@@ -127,13 +142,13 @@ export function TerminalView({ name }: { name: string }) {
       setStatus({ kind: 'closed', message });
       if (ev.code === 4401) void refresh();
     };
-    // Flush small acks regularly so a quiet session never looks stuck.
+    // Flush small acks often so a quiet session never looks stuck.
     const ackTimer = setInterval(() => {
       if (pendingAck > 0 && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ t: 'ack', bytes: pendingAck }));
         pendingAck = 0;
       }
-    }, 500);
+    }, 100);
 
     const onData = t.onData(sendTyped);
     const onBinary = t.onBinary((data) => {
