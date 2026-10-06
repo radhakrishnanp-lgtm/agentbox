@@ -27,6 +27,7 @@ import {
   requestContext,
   requestSteps,
   withVisibleThinking,
+  withoutHiddenThinking,
 } from './trace.ts';
 import { requestModel, UsageMeter } from './usage.ts';
 
@@ -652,13 +653,17 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           s.tracker.enabled() && isModelCall(request.method, path) ? new TraceCollector() : null;
         const answer: { type: string | undefined } = { type: undefined };
         // The tracker asks the provider for readable thinking; the CLI's own settings stay as they were.
-        const traceBody =
-          trace &&
+        const askThinking =
+          trace !== null &&
           request.method === 'POST' &&
           !request.headers['content-encoding'] &&
-          !thinkingRefused.has(key.id)
-            ? withVisibleThinking(body)
-            : null;
+          !thinkingRefused.has(key.id);
+        const traceBody = askThinking ? withVisibleThinking(body) : null;
+        const betaHeader = request.headers['anthropic-beta'];
+        const traceBeta = askThinking
+          ? withoutHiddenThinking(Array.isArray(betaHeader) ? betaHeader.join(',') : betaHeader)
+          : null;
+        const traced = traceBody !== null || traceBeta !== null;
 
         const ctrl = new AbortController();
         const untrack = state.track(m.id, ctrl);
@@ -727,17 +732,24 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         });
 
         let upstream: Awaited<ReturnType<typeof upstreamRequest>>;
-        const send = (b: Buffer | undefined) =>
+        const send = (b: Buffer | undefined, beta: string | null = null) =>
           upstreamRequest(`${upstreamBase}${upstreamPath}${query}`, {
             method: request.method as 'GET',
-            headers: upstreamHeaders(request.headers, key, secret, accountId),
+            headers: upstreamHeaders(
+              beta === null
+                ? request.headers
+                : { ...request.headers, 'anthropic-beta': beta || undefined },
+              key,
+              secret,
+              accountId,
+            ),
             ...(b && request.method !== 'GET' ? { body: b } : {}),
             signal: ctrl.signal,
             dispatcher,
           });
         try {
-          upstream = await send(traceBody ?? body);
-          if (traceBody && upstream.statusCode === 400) {
+          upstream = await send(traceBody ?? body, traceBeta);
+          if (traced && upstream.statusCode === 400) {
             // This provider doesn't take the setting: send the CLI's request as it was.
             await upstream.body.dump();
             upstream = await send(body);
