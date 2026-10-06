@@ -2,10 +2,11 @@
  * The agent tracker's switch and its saved entries. Off unless you turn it on;
  * entries stay until you delete them (the oldest go beyond TRACE_LIMITS.maxEntries).
  */
-import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or, sql, type SQL } from 'drizzle-orm';
 import {
   TRACE_LIMITS,
   type TraceEntry,
+  type TraceFilterOptions,
   type TracePage,
   type TraceStep,
   type TraceSummary,
@@ -20,6 +21,20 @@ import type { SecretBox } from '../lib/crypto.ts';
 import { newId } from '../lib/ids.ts';
 
 const SETTING_KEY = 'agentTracker';
+const OPTIONS_KEY = 'agentTrackerOptions';
+
+/** Narrows the list, and "all" exports and deletes, to one computer, address or model. */
+export interface TraceFilter {
+  machineId?: string | undefined;
+  ip?: string | undefined;
+  model?: string | undefined;
+}
+
+/** What the tracker saves besides the steps. Both off unless you turn them on. */
+export interface TrackerOptions {
+  system: boolean;
+  tools: boolean;
+}
 const CONTEXT = 'agent_trace.events';
 const BLOB = 'agent_trace.blob';
 
@@ -29,6 +44,7 @@ export interface TraceInput {
   ts: number;
   machineId: string;
   machineName: string;
+  ip?: string | null;
   keySlug: string;
   cli: string | null;
   model: string | null;
@@ -49,6 +65,7 @@ export class Tracker {
   readonly #box: SecretBox;
   readonly #audit: AuditLog;
   #enabled: boolean | undefined;
+  #options: TrackerOptions | undefined;
   #saved = 0;
 
   constructor(db: Db, clock: Clock, box: SecretBox, audit: AuditLog) {
@@ -67,15 +84,37 @@ export class Tracker {
     return this.#enabled;
   }
 
-  setEnabled(on: boolean, actor: string, ip: string): TrackerStatus {
+  /** Whether to save system prompts and tool lists too. Read on every saved entry, so cached. */
+  options(): TrackerOptions {
+    if (this.#options === undefined) {
+      const row = this.#db.select().from(setting).where(eq(setting.key, OPTIONS_KEY)).get();
+      const v = (row?.value ?? {}) as Partial<TrackerOptions>;
+      this.#options = { system: v.system === true, tools: v.tools === true };
+    }
+    return this.#options;
+  }
+
+  #put(key: string, value: unknown): void {
     const now = this.#clock.now();
     this.#db
       .insert(setting)
-      .values({ key: SETTING_KEY, value: on, updatedAt: now })
-      .onConflictDoUpdate({ target: setting.key, set: { value: on, updatedAt: now } })
+      .values({ key, value, updatedAt: now })
+      .onConflictDoUpdate({ target: setting.key, set: { value, updatedAt: now } })
       .run();
+  }
+
+  setEnabled(on: boolean, actor: string, ip: string): TrackerStatus {
+    this.#put(SETTING_KEY, on);
     this.#enabled = on;
     this.#audit.record({ actor, action: on ? 'tracker.enabled' : 'tracker.disabled', ip });
+    return this.status();
+  }
+
+  setOptions(change: Partial<TrackerOptions>, actor: string, ip: string): TrackerStatus {
+    const next = { ...this.options(), ...change };
+    this.#put(OPTIONS_KEY, next);
+    this.#options = next;
+    this.#audit.record({ actor, action: 'tracker.options', ip, details: { ...next } });
     return this.status();
   }
 
@@ -84,7 +123,12 @@ export class Tracker {
       .select({ n: sql<number>`count(*)` })
       .from(agentTrace)
       .get();
-    return { enabled: this.enabled(), entries: r?.n ?? 0, maxEntries: TRACE_LIMITS.maxEntries };
+    return {
+      enabled: this.enabled(),
+      ...this.options(),
+      entries: r?.n ?? 0,
+      maxEntries: TRACE_LIMITS.maxEntries,
+    };
   }
 
   save(input: TraceInput): void {
@@ -93,8 +137,10 @@ export class Tracker {
     const counts: Record<string, number> = {};
     for (const s of steps) counts[s.type] = (counts[s.type] ?? 0) + 1;
     const id = newId();
-    const tools = input.tools ?? [];
-    const systemHash = input.system ? this.#putBlob(input.system) : null;
+    // Saved only while their switches are on.
+    const opts = this.options();
+    const tools = opts.tools ? (input.tools ?? []) : [];
+    const systemHash = opts.system && input.system ? this.#putBlob(input.system) : null;
     const toolsHash = tools.length ? this.#putBlob(JSON.stringify(tools)) : null;
     this.#db
       .insert(agentTrace)
@@ -103,6 +149,7 @@ export class Tracker {
         ts: input.ts,
         machineId: input.machineId,
         machineName: input.machineName,
+        ip: input.ip ?? null,
         keySlug: input.keySlug,
         cli: input.cli,
         model: input.model,
@@ -210,6 +257,7 @@ export class Tracker {
       ts: iso(r.ts),
       machineId: r.machineId,
       machineName: r.machineName,
+      ip: r.ip,
       keySlug: r.keySlug,
       cli: r.cli,
       model: r.model,
@@ -228,19 +276,63 @@ export class Tracker {
     };
   }
 
-  list(opts: {
-    limit: number;
-    before?: string | undefined;
-    machineId?: string | undefined;
-  }): TracePage {
-    const filters = [];
-    if (opts.machineId) filters.push(eq(agentTrace.machineId, opts.machineId));
+  #where(f: TraceFilter | undefined) {
+    const filters: SQL[] = [];
+    if (f?.machineId) filters.push(eq(agentTrace.machineId, f.machineId));
+    if (f?.ip) filters.push(eq(agentTrace.ip, f.ip));
+    if (f?.model) filters.push(eq(agentTrace.model, f.model));
+    return filters;
+  }
+
+  /** The computers, addresses and models that appear in the saved entries. */
+  filterOptions(): TraceFilterOptions {
+    const machines = this.#db
+      .select({ id: agentTrace.machineId, name: agentTrace.machineName })
+      .from(agentTrace)
+      .groupBy(agentTrace.machineId, agentTrace.machineName)
+      .orderBy(sql`max(${agentTrace.ts})`)
+      .all();
+    // A renamed computer keeps one entry: its newest name.
+    const byId = new Map<string, string>();
+    for (const m of machines) byId.set(m.id, m.name);
+    const ips = this.#db
+      .selectDistinct({ ip: agentTrace.ip })
+      .from(agentTrace)
+      .orderBy(agentTrace.ip)
+      .all()
+      .map((r) => r.ip)
+      .filter((v): v is string => !!v);
+    const models = this.#db
+      .selectDistinct({ model: agentTrace.model })
+      .from(agentTrace)
+      .orderBy(agentTrace.model)
+      .all()
+      .map((r) => r.model)
+      .filter((v): v is string => !!v);
+    return {
+      machines: [...byId]
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      ips,
+      models,
+    };
+  }
+
+  list(
+    opts: {
+      limit: number;
+      before?: string | undefined;
+    } & TraceFilter,
+  ): TracePage {
+    const filters = this.#where(opts);
     const cursor = /^(\d{1,15})\.([A-Za-z0-9-]{1,64})$/.exec(opts.before ?? '');
     if (cursor) {
       const ts = Number(cursor[1]);
-      filters.push(
-        or(lt(agentTrace.ts, ts), and(eq(agentTrace.ts, ts), lt(agentTrace.id, cursor[2] ?? ''))),
+      const older = or(
+        lt(agentTrace.ts, ts),
+        and(eq(agentTrace.ts, ts), lt(agentTrace.id, cursor[2] ?? '')),
       );
+      if (older) filters.push(older);
     }
     const rows = this.#db
       .select()
@@ -279,10 +371,14 @@ export class Tracker {
   }
 
   /** Deletes the given entries, or every entry when `ids` is "all". */
-  delete(ids: string[] | 'all', actor: string, ip: string): number {
+  delete(ids: string[] | 'all', actor: string, ip: string, filter?: TraceFilter): number {
+    const where = this.#where(filter);
     const n =
       ids === 'all'
-        ? this.#db.delete(agentTrace).run().changes
+        ? this.#db
+            .delete(agentTrace)
+            .where(where.length ? and(...where) : undefined)
+            .run().changes
         : ids.length === 0
           ? 0
           : this.#db.delete(agentTrace).where(inArray(agentTrace.id, ids)).run().changes;
@@ -292,16 +388,31 @@ export class Tracker {
         actor,
         action: 'tracker.deleted',
         ip,
-        details: { count: n, all: ids === 'all' },
+        details: {
+          count: n,
+          all: ids === 'all',
+          ...(where.length ? { filter: { ...filter } } : {}),
+        },
       });
     return n;
   }
 
   /** CSV with one row per step, oldest entry first. */
-  exportCsv(ids: string[] | 'all', actor: string, ip: string): { csv: string; entries: number } {
+  exportCsv(
+    ids: string[] | 'all',
+    actor: string,
+    ip: string,
+    filter?: TraceFilter,
+  ): { csv: string; entries: number } {
+    const where = this.#where(filter);
     const rows =
       ids === 'all'
-        ? this.#db.select().from(agentTrace).orderBy(agentTrace.ts, agentTrace.id).all()
+        ? this.#db
+            .select()
+            .from(agentTrace)
+            .where(where.length ? and(...where) : undefined)
+            .orderBy(agentTrace.ts, agentTrace.id)
+            .all()
         : ids.length === 0
           ? []
           : this.#db
@@ -314,6 +425,7 @@ export class Tracker {
       'time',
       'entry',
       'computer',
+      'address',
       'key',
       'cli',
       'model',
@@ -338,6 +450,7 @@ export class Tracker {
             iso(r.ts),
             r.id,
             r.machineName,
+            r.ip,
             r.keySlug,
             r.cli,
             r.model,
@@ -377,7 +490,11 @@ export class Tracker {
       actor,
       action: 'tracker.exported',
       ip,
-      details: { count: rows.length, all: ids === 'all' },
+      details: {
+        count: rows.length,
+        all: ids === 'all',
+        ...(where.length ? { filter: { ...filter } } : {}),
+      },
     });
     // A byte order mark, so Excel reads it as UTF-8.
     return { csv: `\uFEFF${lines.join('\r\n')}\r\n`, entries: rows.length };

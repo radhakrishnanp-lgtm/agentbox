@@ -38,6 +38,7 @@ export type AuditAction =
   | 'ai_key.tested'
   | 'tracker.enabled'
   | 'tracker.disabled'
+  | 'tracker.options'
   | 'tracker.deleted'
   | 'tracker.exported'
   | 'machine.added'

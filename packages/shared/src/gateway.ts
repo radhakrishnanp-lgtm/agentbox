@@ -429,6 +429,10 @@ export interface TraceStep {
 
 export interface TrackerStatus {
   enabled: boolean;
+  /** Also save each request's system prompt (off unless you turn it on). */
+  system: boolean;
+  /** Also save the tools and MCP servers the CLI offered (off unless you turn it on). */
+  tools: boolean;
   entries: number;
   /** Entries kept at most; the oldest go first beyond this. */
   maxEntries: number;
@@ -439,6 +443,8 @@ export interface TraceSummary {
   ts: string;
   machineId: string;
   machineName: string;
+  /** The address the computer called from. */
+  ip: string | null;
   keySlug: string;
   cli: string | null;
   model: string | null;
@@ -458,6 +464,20 @@ export interface TraceSummary {
   /** The start of the prompt (or first step), to recognise the entry. */
   preview: string;
   note: string;
+}
+
+/** Narrows the tracker list (and "all" exports and deletes) to one computer, address or model. */
+export interface TraceFilter {
+  machineId?: string;
+  ip?: string;
+  model?: string;
+}
+
+/** The values the filters can take, from what is saved. */
+export interface TraceFilterOptions {
+  machines: { id: string; name: string }[];
+  ips: string[];
+  models: string[];
 }
 
 export interface TracePage {

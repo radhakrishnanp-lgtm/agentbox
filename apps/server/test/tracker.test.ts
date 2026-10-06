@@ -550,7 +550,7 @@ describe('agent tracker', () => {
     expect(exported.statusCode, exported.body).toBe(200);
     const { csv, entries } = exported.json<{ csv: string; entries: number }>();
     expect(entries).toBe(1);
-    expect(csv.split('\r\n')[0]).toContain('time,entry,computer,key,cli,model');
+    expect(csv.split('\r\n')[0]).toContain('time,entry,computer,address,key,cli,model');
     expect(csv).toContain('command,Bash,ls -la');
     expect(csv).toContain('check this');
     expect((await laptop.post('/api/tracker/export', { ids: 'all' })).json().entries).toBe(2);
@@ -599,6 +599,28 @@ describe('agent tracker', () => {
 
     await h.reauth(laptop);
     await send('PUT', '/api/tracker', { enabled: true });
+    // Both extra switches are off by default: nothing of the setup is saved.
+    expect((await laptop.get('/api/tracker')).json<TrackerStatus>()).toMatchObject({
+      system: false,
+      tools: false,
+    });
+    await ask(pass, 'without setup', setup);
+    const bare = (await laptop.get('/api/tracker/entries')).json<TracePage>().entries[0]!;
+    expect(bare).toMatchObject({ hasSystem: false, toolCount: 0 });
+    expect(h.services.db.select().from(agentTraceBlob).all()).toHaveLength(0);
+    await laptop.post('/api/tracker/delete', { ids: 'all' });
+
+    // Turning them on needs the fresh check too.
+    h.clock.advance(6 * 60_000);
+    await h.signInWithPasskey(laptop);
+    h.clock.advance(6 * 60_000);
+    expect((await send('PUT', '/api/tracker', { system: true })).json().error.code).toBe(
+      'fresh_auth_required',
+    );
+    await h.reauth(laptop);
+    expect(
+      (await send('PUT', '/api/tracker', { system: true, tools: true })).json<TrackerStatus>(),
+    ).toMatchObject({ enabled: true, system: true, tools: true });
     expect((await ask(pass, 'first', setup)).statusCode).toBe(200);
     expect((await ask(pass, 'second', setup)).statusCode).toBe(200);
     // On: the provider is asked for readable thinking.
@@ -640,6 +662,90 @@ describe('agent tracker', () => {
     // Deleting the entries deletes the copies too.
     await laptop.post('/api/tracker/delete', { ids: 'all' });
     expect(h.services.db.select().from(agentTraceBlob).all()).toHaveLength(0);
+  });
+
+  it('saves only the system prompt when only that switch is on', async () => {
+    const pass = await machine();
+    await h.reauth(laptop);
+    await send('PUT', '/api/tracker', { enabled: true, system: true });
+    await ask(pass, 'hello', {
+      system: 'You are Claude Code.',
+      tools: [{ name: 'mcp__github__create_issue', description: 'x', input_schema: {} }],
+    });
+    const e = (await laptop.get('/api/tracker/entries')).json<TracePage>().entries[0]!;
+    expect(e).toMatchObject({ hasSystem: true, toolCount: 0, mcpToolCount: 0 });
+    const entry = (await laptop.get(`/api/tracker/entries/${e.id}`)).json<TraceEntry>();
+    expect(entry.system).toBe('You are Claude Code.');
+    expect(entry.tools).toEqual([]);
+    // Turning a switch off needs no fresh check.
+    h.clock.advance(6 * 60_000);
+    await h.signInWithPasskey(laptop);
+    h.clock.advance(6 * 60_000);
+    const off = await send('PUT', '/api/tracker', { system: false });
+    expect(off.statusCode, off.body).toBe(200);
+    expect(off.json<TrackerStatus>()).toMatchObject({ enabled: true, system: false });
+  });
+
+  it('filters by computer, address and model, and "all" follows the filter', async () => {
+    const pass = await machine();
+    await h.reauth(laptop);
+    await send('PUT', '/api/tracker', { enabled: true });
+    const from = (ip: string, prompt: string, model: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/gw/anthropic/v1/messages',
+        headers: {
+          host: RP_ID,
+          'x-forwarded-for': ip,
+          'x-forwarded-proto': 'https',
+          'content-type': 'application/json',
+          'x-api-key': pass,
+        },
+        payload: JSON.stringify({
+          model,
+          max_tokens: 8,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+    expect((await from('198.51.100.50', 'a', 'claude-sonnet-4-5')).statusCode).toBe(200);
+    expect((await from('198.51.100.50', 'b', 'claude-opus-5-5')).statusCode).toBe(200);
+    // The machine is locked to its first address, so a second one must be allowed first.
+    const page0 = (await laptop.get('/api/tracker/entries')).json<TracePage>();
+    const machineId = page0.entries[0]!.machineId;
+    const opts = (await laptop.get('/api/tracker/filters')).json<{
+      machines: { id: string; name: string }[];
+      ips: string[];
+      models: string[];
+    }>();
+    expect(opts).toEqual({
+      machines: [{ id: machineId, name: 'A6000' }],
+      ips: ['198.51.100.50'],
+      models: ['claude-opus-5-5', 'claude-sonnet-4-5'],
+    });
+    const list = async (q: string) =>
+      (await laptop.get(`/api/tracker/entries?${q}`))
+        .json<TracePage>()
+        .entries.map((e) => e.preview);
+    expect(await list('model=claude-opus-5-5')).toEqual(['b']);
+    expect(await list(`machineId=${machineId}&ip=198.51.100.50`)).toEqual(['b', 'a']);
+    expect(await list('ip=203.0.113.9')).toEqual([]);
+    expect((await laptop.get('/api/tracker/entries')).json<TracePage>().entries[0]!.ip).toBe(
+      '198.51.100.50',
+    );
+
+    // Export and delete "all" with a filter touch only the matching entries.
+    const exported = await laptop.post('/api/tracker/export', {
+      ids: 'all',
+      filter: { model: 'claude-sonnet-4-5' },
+    });
+    expect(exported.json().entries).toBe(1);
+    expect(exported.json<{ csv: string }>().csv.split('\r\n')[0]).toContain('computer,address,key');
+    const deleted = await laptop.post('/api/tracker/delete', {
+      ids: 'all',
+      filter: { model: 'claude-sonnet-4-5' },
+    });
+    expect(deleted.json().deleted).toBe(1);
+    expect(await list('')).toEqual(['b']);
   });
 
   it('sends the request unchanged when the provider refuses the thinking setting', async () => {
