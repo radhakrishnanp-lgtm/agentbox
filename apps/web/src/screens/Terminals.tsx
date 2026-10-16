@@ -656,8 +656,9 @@ function InstallHelp() {
           curl -fsSL https://claude.ai/install.sh | bash
         </pre>
         <p>
-          npm works too (<code className="font-mono">npm install -g …</code>). Then run the CLI and
-          sign in once. The login is saved in the vault and never leaves this server.
+          npm works too (<code className="font-mono">npm install -g …</code>), for example{' '}
+          <code className="font-mono">npm install -g opencode-ai</code> for OpenCode. Then run the
+          CLI and sign in once. The login is saved in the vault and never leaves this server.
         </p>
       </CardBody>
     </Card>

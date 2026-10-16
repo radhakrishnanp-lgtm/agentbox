@@ -15,7 +15,7 @@ import { renderMachineScript } from '../src/gateway/script.ts';
 import { Harness, type Browser } from './helpers/harness.ts';
 
 const run = promisify(execFile);
-const CLIS = ['claude', 'codex', 'grok', 'kimi', 'gemini'] as const;
+const CLIS = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'opencode'] as const;
 
 let h: Harness;
 let laptop: Browser;
@@ -114,7 +114,7 @@ describe('machine setup script', () => {
     writeFileSync(script, renderMachineScript(base));
     const report = await pc.sh(`sh '${script}'`, { AGENTBOX_PASS: pass });
     expect(report).toContain(
-      'These commands now use your agentbox keys: claude codex grok kimi gemini',
+      'These commands now use your agentbox keys: claude codex grok kimi gemini opencode',
     );
     expect(statSync(join(pc.home, '.config/agentbox/pass')).mode & 0o777).toBe(0o600);
 
@@ -177,6 +177,45 @@ describe('machine setup script', () => {
       security: { auth: { selectedType: 'gemini-api-key' } },
       privacy: { usageStatisticsEnabled: false },
     });
+
+    // OpenCode: one settings file for every key it can use, the pass read from a link to the pass file.
+    const opencode = pc.seen('opencode');
+    const ocDir = join(pc.home, '.local/share/agentbox/opencode');
+    expect(opencode.vars.get('OPENCODE_CONFIG')).toBe(join(ocDir, 'opencode.json'));
+    expect(opencode.vars.get('OPENCODE_AUTH_CONTENT')).toBe('{}');
+    expect(opencode.vars.get('OPENCODE_DISABLE_AUTOUPDATE')).toBe('1');
+    expect(opencode.vars.has('ANTHROPIC_API_KEY')).toBe(false);
+    expect(opencode.vars.has('OPENAI_API_KEY')).toBe(false);
+    expect([...opencode.vars.values()].some((v) => v.includes(pass))).toBe(false);
+    expect(opencode.args).toEqual(['--flag', 'two words']);
+    const ocText = readFileSync(join(ocDir, 'opencode.json'), 'utf8');
+    expect(ocText).not.toContain(pass);
+    expect(statSync(join(ocDir, 'opencode.json')).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(ocDir, 'pass'), 'utf8').trim()).toBe(pass);
+    const oc = JSON.parse(ocText) as {
+      provider: Record<string, { npm?: string; options: { baseURL: string; apiKey: string } }>;
+      enabled_providers: string[];
+      model: string;
+    };
+    expect(oc.enabled_providers).toEqual(['anthropic', 'openai', 'xai', 'agentbox-kimi', 'google']);
+    expect(oc.model).toBe('openai/gpt-5.1-codex');
+    // agentbox's own address, which is where the setup script comes from in real use.
+    const origin = h.services.config.origin;
+    expect(oc.provider.anthropic?.options).toEqual({
+      baseURL: `${origin}/gw/anthropic/v1`,
+      apiKey: '{file:pass}',
+    });
+    expect(oc.provider.google?.options.baseURL).toBe(`${origin}/gw/gemini/v1beta`);
+    expect(oc.provider['agentbox-kimi']?.npm).toBe('@ai-sdk/openai-compatible');
+
+    // agentbox knows which computer set itself up.
+    const listed = await laptop.get('/api/gateway');
+    const computers = listed.json<{ machines: MachineCreated['machine'][] }>().machines[0]
+      ?.computers;
+    expect(computers).toHaveLength(1);
+    expect(computers?.[0]?.ip).toBe('127.0.0.1');
+    expect(computers?.[0]?.user).toBe((await pc.sh('id -un')).trim());
+    expect(computers?.[0]?.os).toMatch(/\(\w+\)$/);
 
     // Nothing is exported into the normal shell.
     expect(await pc.sh('echo "[${ANTHROPIC_BASE_URL:-}${XAI_API_KEY:-}]"')).toBe('[]\n');
@@ -298,7 +337,7 @@ describe('machine setup script', () => {
     expect(readFileSync(join(pc.home, '.bash_profile'), 'utf8')).toBe('# conda etc\n');
   });
 
-  it('skips a Kimi key without a model, and a CLI it does not know', async () => {
+  it('skips a Kimi key without a model, and gives OpenCode a key no other CLI uses', async () => {
     await h.app.listen({ host: '127.0.0.1', port: 0 });
     const address = h.app.server.address();
     if (!address || typeof address === 'string') throw new Error('no address');
@@ -316,7 +355,25 @@ describe('machine setup script', () => {
     const script = join(dir, 'machine.sh');
     writeFileSync(script, renderMachineScript(base));
     const report = await pc.sh(`sh '${script}'`, { AGENTBOX_PASS: pass });
-    expect(report).toContain('No AI tools are allowed for this machine yet');
+    expect(report).toContain('These commands now use your agentbox keys: opencode');
     expect(existsSync(join(pc.bin, 'kimi'))).toBe(false);
+    const oc = JSON.parse(
+      readFileSync(join(pc.home, '.local/share/agentbox/opencode/opencode.json'), 'utf8'),
+    ) as { enabled_providers: string[] };
+    expect(oc.enabled_providers).toEqual(['openrouter']);
+
+    // Without the OpenRouter key, nothing is left for OpenCode either.
+    await h.reauth(laptop);
+    const machineId = created.json<MachineCreated>().machine.id;
+    const patched = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machineId}`,
+      payload: { keyIds: [kimi.id] },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    const again = await pc.sh(`sh '${script}' refresh`, { AGENTBOX_FRESH: join(dir, 'gone') });
+    expect(again).toContain('No AI tools are allowed for this machine yet');
+    expect(existsSync(join(pc.bin, 'opencode'))).toBe(false);
+    expect(existsSync(join(pc.home, '.local/share/agentbox/opencode'))).toBe(false);
   });
 });

@@ -3,6 +3,7 @@
  * Secrets are never stored in plain text: tokens are stored as SHA-256 hashes,
  * recovery codes and the sign-in password as scrypt hashes, and the TOTP seed AES-256-GCM encrypted.
  */
+import type { MachineComputer } from '@agentbox/shared';
 import { sql } from 'drizzle-orm';
 import {
   blob,
@@ -274,6 +275,11 @@ export const machine = sqliteTable(
       .$type<Record<string, string>>()
       .notNull()
       .default(sql`'{}'`),
+    /** Allowed addresses that are turned off for now (they stay in the list). */
+    ipOff: text('ip_off', { mode: 'json' })
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'`),
     rpm: integer('rpm').notNull(),
     dailyTokenLimit: integer('daily_token_limit'),
     expiresAt: integer('expires_at'),
@@ -284,6 +290,11 @@ export const machine = sqliteTable(
     approveNewIps: integer('approve_new_ips', { mode: 'boolean' }).notNull().default(false),
     pendingIp: text('pending_ip'),
     pendingIpAt: integer('pending_ip_at'),
+    /** Computers that set themselves up with this pass, as they reported themselves. */
+    computers: text('computers', { mode: 'json' })
+      .$type<MachineComputer[]>()
+      .notNull()
+      .default(sql`'[]'`),
     ...timestamps,
   },
   (t) => [uniqueIndex('machine_pass_hash').on(t.passHash)],

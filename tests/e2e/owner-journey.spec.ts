@@ -407,6 +407,40 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     ).toBeVisible();
     expect(await fromOther()).toContain('(127.0.0.2) is new for this machine');
 
+    // Turn one address off without removing it: it is refused, then works again once on.
+    const setAddress = async (on: boolean) => {
+      await page.getByRole('button', { name: 'Edit', exact: true }).click();
+      const toggle = page.getByRole('switch', { name: 'Allow 127.0.0.1' });
+      await expect(toggle).toHaveAttribute('aria-checked', String(!on));
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-checked', String(on));
+      if (!on) await shot(page, 'machine-address-off');
+      await page.getByRole('button', { name: 'Save changes' }).click();
+      await expect(page.getByRole('button', { name: 'Save changes' })).toBeHidden();
+    };
+    await setAddress(false);
+    await expect(page.getByText(/\(1 turned off\)/)).toBeVisible();
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
+      '(127.0.0.1) is turned off for this machine',
+    );
+    await setAddress(true);
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
+      'Hello from the fake provider',
+    );
+
+    // Activity names the computer, its user and the program behind each machine event.
+    await page.goto('/activity');
+    const setupRow = page
+      .getByRole('listitem')
+      .filter({ hasText: 'Computer set up with a machine pass' })
+      .first();
+    await expect(setupRow).toContainText(/Computer: .+ · user .+/);
+    await expect(setupRow).toContainText('Via curl');
+    await setupRow.getByText('Details').click();
+    await expect(setupRow.getByText('Done by')).toBeVisible();
+    await shot(page, 'activity-details');
+    await page.goto('/machines');
+
     // Logs: the computer, where it called from, and what it used.
     await page
       .getByRole('navigation', { name: 'Main' })

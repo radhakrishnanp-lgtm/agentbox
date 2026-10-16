@@ -214,6 +214,121 @@ describe('machines', () => {
     expect(lines[1]).toEqual(['key', 'anthropic', 'claude', '-', 'Claude API']);
   });
 
+  it('records which computer, user and program used a machine pass', async () => {
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id], { ipRules: ['198.51.100.0/24'] });
+    const setup = (host: string, ip = MACHINE_IP) =>
+      gw({
+        method: 'GET',
+        url: '/gw/_machine',
+        ip,
+        headers: {
+          authorization: `Bearer ${pass}`,
+          accept: 'text/plain',
+          'user-agent': 'curl/8.5.0',
+          'x-agentbox-host': host,
+          'x-agentbox-user': 'krish',
+          'x-agentbox-os': 'Ubuntu 24.04.1 LTS',
+        },
+      });
+    expect((await setup('gpu-box\u0007<script>')).statusCode).toBe(200);
+    // A refresh from the same computer adds nothing new.
+    expect((await setup('gpu-box<script>')).statusCode).toBe(200);
+    expect((await setup('laptop', '198.51.100.20')).statusCode).toBe(200);
+    // The CLI's own requests from that address name the computer too.
+    await gw({
+      url: '/gw/anthropic/v1/messages',
+      headers: { 'x-api-key': pass },
+      payload: messages,
+    });
+
+    const listed = await laptop.get('/api/gateway');
+    const m = listed.json<{ machines: MachineCreated['machine'][] }>().machines[0];
+    expect(m?.computers.map((c) => [c.ip, c.host, c.user, c.os])).toEqual([
+      ['198.51.100.20', 'laptop', 'krish', 'Ubuntu 24.04.1 LTS'],
+      [MACHINE_IP, 'gpu-boxscript', 'krish', 'Ubuntu 24.04.1 LTS'],
+    ]);
+
+    const rows = h.services.db
+      .select()
+      .from(auditLog)
+      .all()
+      .filter((a) => a.targetId === machine.id)
+      .map((a): Record<string, unknown> => ({
+        action: a.action,
+        ...(JSON.parse(a.details) as Record<string, unknown>),
+      }));
+    expect(rows.filter((r) => r.action === 'machine.setup')).toHaveLength(2);
+    expect(rows.find((r) => r.action === 'machine.first_used')).toMatchObject({
+      client: 'curl/8.5.0',
+      computer: { host: 'gpu-boxscript', user: 'krish', os: 'Ubuntu 24.04.1 LTS' },
+    });
+    // Back at the first address, the CLI request is named after the computer that set up there.
+    expect(rows.filter((r) => r.action === 'machine.ip_changed').at(-1)).toMatchObject({
+      previousIp: '198.51.100.20',
+      client: 'claude-cli/2.0.0 (external, cli)',
+      computer: { host: 'gpu-boxscript' },
+    });
+    // Browser actions name the browser.
+    expect(rows.find((r) => r.action === 'machine.added')?.client).toMatch(/./);
+
+    // A computer at an address that isn't allowed is named in the refusal.
+    expect((await setup('stranger-pc', '203.0.113.66')).statusCode).toBe(403);
+    const blocked = h.services.db
+      .select()
+      .from(auditLog)
+      .all()
+      .find((a) => a.action === 'machine.blocked_ip');
+    expect(JSON.parse(blocked?.details ?? '{}')).toMatchObject({
+      computer: { host: 'stranger-pc', user: 'krish' },
+      client: 'curl/8.5.0',
+    });
+    expect(h.services.audit.verify().ok).toBe(true);
+  });
+
+  it('gives OpenCode the API keys only, never a subscription login', async () => {
+    const api = await addKey({ preset: 'gemini', slug: 'gemini', name: 'Gemini' });
+    const kimi = await addKey({
+      preset: 'kimi-code',
+      slug: 'kimi-code',
+      name: 'Kimi Code',
+      model: 'kimi-for-coding',
+    });
+    const subs = [
+      await addKey({
+        preset: 'anthropic-subscription',
+        slug: 'claude',
+        name: 'Max',
+        secret: 'sk-ant-oat01-x',
+      }),
+      await addKey({ preset: 'codex-login', slug: 'chatgpt', name: 'ChatGPT', secret: '' }),
+      await addKey({ preset: 'grok-login', slug: 'supergrok', name: 'SuperGrok', secret: '' }),
+    ];
+    const get = (pass: string) =>
+      gw({ method: 'GET', url: '/gw/_opencode', headers: { authorization: `Bearer ${pass}` } });
+
+    const only = await addMachine(subs.map((k) => k.id));
+    expect((await get(only.pass)).statusCode).toBe(204);
+    expect((await get('abx_' + 'x'.repeat(43))).statusCode).toBe(401);
+
+    const both = await addMachine([api.id, kimi.id, ...subs.map((k) => k.id)], { name: 'gpu-2' });
+    const res = await get(both.pass);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(both.pass);
+    const config = res.json<{
+      provider: Record<string, { npm?: string; options: { baseURL: string; apiKey: string } }>;
+      enabled_providers: string[];
+      model: string;
+    }>();
+    expect(config.enabled_providers).toEqual(['google', 'agentbox-kimi-code']);
+    expect(config.model).toBe('agentbox-kimi-code/kimi-for-coding');
+    expect(config.provider.google?.options).toEqual({
+      baseURL: `${ORIGIN}/gw/gemini/v1beta`,
+      apiKey: '{file:pass}',
+    });
+    expect(config.provider['agentbox-kimi-code']?.npm).toBe('@ai-sdk/openai-compatible');
+  });
+
   it('serves the setup script with this agentbox address and no secrets', async () => {
     const res = await h.app.inject({ method: 'GET', url: '/machine.sh' });
     expect(res.statusCode).toBe(200);
@@ -557,6 +672,68 @@ describe('who may use the relay', () => {
     expect(actions).toEqual(
       expect.arrayContaining(['machine.ip_locked', 'machine.ip_allowed', 'machine.ip_ignored']),
     );
+  });
+
+  it('turns one allowed address off and on again, without asking to allow it', async () => {
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id], {
+      ipRules: ['198.51.100.0/24', '203.0.113.9'],
+      ipLabels: { '203.0.113.9': 'office' },
+    });
+    const from = (ip: string) =>
+      gw({
+        url: '/gw/anthropic/v1/messages',
+        headers: { 'x-api-key': pass },
+        payload: messages,
+        ip,
+      });
+    const patch = async (payload: Record<string, unknown>) => {
+      await h.reauth(laptop);
+      return laptop.request({
+        method: 'PATCH',
+        url: `/api/gateway/machines/${machine.id}`,
+        payload,
+      });
+    };
+    expect((await from('203.0.113.9')).statusCode).toBe(200);
+
+    const off = await patch({ ipOff: ['203.0.113.9'] });
+    expect(off.statusCode, off.body).toBe(200);
+    expect(off.json().ipOff).toEqual(['203.0.113.9']);
+    expect(off.json().ipRules).toEqual(['198.51.100.0/24', '203.0.113.9']);
+    expect(off.json().ipLabels).toEqual({ '203.0.113.9': 'office' });
+    const blocked = await from('203.0.113.9');
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error.message).toMatch(/203\.0\.113\.9\) is turned off/);
+    // It doesn't wait for your OK: you turned it off yourself.
+    const listed = await laptop.get('/api/gateway');
+    expect(
+      listed.json<{ machines: MachineCreated['machine'][] }>().machines[0]?.pendingIp,
+    ).toBeNull();
+    // The other address still works.
+    expect((await from('198.51.100.7')).statusCode).toBe(200);
+
+    // All addresses off: nothing gets in, and it doesn't lock to a new one either.
+    await patch({ ipOff: ['198.51.100.0/24', '203.0.113.9'] });
+    expect((await from('198.51.100.7')).statusCode).toBe(403);
+    expect((await from('192.0.2.1')).statusCode).toBe(403);
+
+    // On again; an address that left the list leaves the off list too.
+    const on = await patch({ ipOff: [] });
+    expect(on.json().ipOff).toEqual([]);
+    expect((await from('203.0.113.9')).statusCode).toBe(200);
+    await patch({ ipOff: ['203.0.113.9'] });
+    const removed = await patch({ ipRules: ['198.51.100.0/24'] });
+    expect(removed.json().ipOff).toEqual([]);
+
+    const updates = h.services.db
+      .select()
+      .from(auditLog)
+      .all()
+      .filter((a) => a.action === 'machine.updated')
+      .map((a) => JSON.parse(a.details) as Record<string, unknown>);
+    expect(updates[0]).toMatchObject({ turnedOff: ['203.0.113.9'], turnedOn: [] });
+    expect(updates[2]).toMatchObject({ turnedOn: ['198.51.100.0/24', '203.0.113.9'] });
   });
 
   it('starts a stopped machine again, and deletes one for good', async () => {

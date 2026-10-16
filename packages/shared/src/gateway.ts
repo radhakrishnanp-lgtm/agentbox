@@ -232,6 +232,8 @@ const machineFields = {
   ipRules: z.array(ipRuleSchema).max(GATEWAY_LIMITS.ipRulesMax),
   /** Notes for allowed addresses, by address. Notes for addresses not in the list are dropped. */
   ipLabels: z.record(z.string().max(64), ipLabelSchema),
+  /** Allowed addresses turned off for now. They stay in the list and can be turned on again. */
+  ipOff: z.array(ipRuleSchema).max(GATEWAY_LIMITS.ipRulesMax),
   rpm: z.number().int().min(1).max(GATEWAY_LIMITS.rpmMax),
   dailyTokenLimit: z.number().int().min(1000).max(GATEWAY_LIMITS.dailyTokensMax).nullable(),
   /**
@@ -252,6 +254,7 @@ export const machineCreateSchema = z.object({
   ...machineFields,
   ipRules: machineFields.ipRules.default([]),
   ipLabels: machineFields.ipLabels.default({}),
+  ipOff: machineFields.ipOff.default([]),
   rpm: machineFields.rpm.default(GATEWAY_LIMITS.rpmDefault),
   approveNewIps: machineFields.approveNewIps.default(true),
   lifetimeDays: lifetimeSchema.default(GATEWAY_LIMITS.lifetimeDefaultDays),
@@ -281,6 +284,19 @@ export interface AiKeySummary {
   lastUsedAt: string | null;
 }
 
+/** A computer that set itself up with a machine pass, as it described itself. */
+export interface MachineComputer {
+  ip: string;
+  /** Computer name. */
+  host: string;
+  /** Account the setup ran as. */
+  user: string;
+  /** Operating system and version. */
+  os: string;
+  /** Last setup or refresh. */
+  at: string;
+}
+
 export interface MachineSummary {
   id: string;
   name: string;
@@ -290,6 +306,8 @@ export interface MachineSummary {
   ipRules: string[];
   /** Notes for some of ipRules, by address. */
   ipLabels: Record<string, string>;
+  /** Addresses in ipRules that are turned off for now. */
+  ipOff: string[];
   rpm: number;
   dailyTokenLimit: number | null;
   createdAt: string;
@@ -301,6 +319,8 @@ export interface MachineSummary {
   /** The latest address that was refused and waits for you to allow it. */
   pendingIp: string | null;
   pendingIpAt: string | null;
+  /** Computers that set themselves up with this pass, newest first. */
+  computers: MachineComputer[];
   today: { requests: number; inputTokens: number; outputTokens: number };
 }
 

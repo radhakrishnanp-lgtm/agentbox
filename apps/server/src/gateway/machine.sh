@@ -1,7 +1,7 @@
 #!/bin/sh
 # agentbox machine setup
 #
-# Lets the AI CLIs on this computer (claude, codex, grok, kimi, gemini) use the
+# Lets the AI CLIs on this computer (claude, codex, grok, kimi, gemini, opencode) use the
 # AI keys kept on your agentbox, without storing those keys here. This computer
 # only keeps an agentbox pass, which you can stop at any time in agentbox.
 #
@@ -13,7 +13,7 @@
 # No root needed. Everything lives in your home folder:
 #   ~/.config/agentbox/pass            the pass (only you can read it)
 #   ~/.local/share/agentbox/bin/       small wrappers named claude, codex, ...
-#   ~/.local/share/agentbox/<cli>/     own settings for codex, grok and gemini
+#   ~/.local/share/agentbox/<cli>/     own settings for codex, grok, gemini and opencode
 #                                      (grok-login when grok uses your SuperGrok login)
 # plus one PATH line in your shell start-up files, between agentbox markers.
 set -eu
@@ -26,6 +26,8 @@ PASS_FILE="$CONF/pass"
 MARK_BEGIN='# >>> agentbox machine >>>'
 MARK_END='# <<< agentbox machine <<<'
 CLIS='claude codex grok kimi gemini'
+# Would point OpenCode at a provider directly, or swap in other settings.
+OPENCODE_UNSET='ANTHROPIC_API_KEY ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL XAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENERATIVE_AI_API_KEY OPENROUTER_API_KEY MOONSHOT_API_KEY OPENCODE_API_KEY OPENCODE_CONFIG_CONTENT OPENCODE_CONFIG_DIR'
 TAB=$(printf '\t')
 GEMINI_SETTINGS='{"security":{"auth":{"selectedType":"gemini-api-key"}},"privacy":{"usageStatisticsEnabled":false}}'
 
@@ -49,13 +51,38 @@ valid_pass() {
   printf '%s' "$1" | grep -Eq '^abx_[A-Za-z0-9_-]{43}$'
 }
 
+# Short, safe text for a header: letters, digits and a little punctuation.
+clean() {
+  printf '%s' "$1" | tr -cd 'A-Za-z0-9 ._()/@+:,-' | cut -c1-80
+}
+
+# Which computer this is, so agentbox → Activity can say who used the pass.
+# It is what this computer says about itself, nothing more.
+computer_headers() {
+  os=''
+  if [ -r /etc/os-release ]; then
+    os=$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-${NAME:-}}")
+  elif command -v sw_vers >/dev/null 2>&1; then
+    os="$(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null)"
+  fi
+  [ -n "$os" ] || os=$(uname -s 2>/dev/null || true)
+  os="$os ($(uname -m 2>/dev/null || true))"
+  host=$(hostname 2>/dev/null || uname -n 2>/dev/null || true)
+  user=$(id -un 2>/dev/null || printf '%s' "${USER:-}")
+  printf 'header = "X-Agentbox-Host: %s"\n' "$(clean "$host")"
+  printf 'header = "X-Agentbox-User: %s"\n' "$(clean "$user")"
+  printf 'header = "X-Agentbox-OS: %s"\n' "$(clean "$os")"
+}
+
 # Calls agentbox with the pass. The pass goes through stdin, so other users
 # on this computer can't see it in the process list.
 fetch_setup() {
   body=$(mktemp)
-  code=$(printf 'header = "Authorization: Bearer %s"\n' "$1" |
-    curl -sS --proto "$PROTO" -K - -H 'Accept: text/plain' -o "$body" -w '%{http_code}' \
-      "$AGENTBOX_URL/gw/_machine") || {
+  code=$({
+    printf 'header = "Authorization: Bearer %s"\n' "$1"
+    computer_headers
+  } | curl -sS --proto "$PROTO" -K - -H 'Accept: text/plain' -o "$body" -w '%{http_code}' \
+    "$AGENTBOX_URL/gw/_machine") || {
     rm -f "$body"
     die "could not reach $AGENTBOX_URL."
   }
@@ -213,6 +240,47 @@ write_wrapper() {
   WIRED="$WIRED $cli"
 }
 
+# OpenCode uses every key of this machine that it can, from one settings file
+# that agentbox writes (only API keys: subscription logins stay in their own apps).
+# The settings read the pass through a link to the pass file ({file:pass}), so
+# the pass is never in OpenCode's settings or environment. Logins stored in
+# OpenCode itself are ignored while it runs through this wrapper.
+write_opencode() {
+  dir="$DATA/opencode"
+  rm -rf "$dir"
+  body=$(mktemp)
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$PASS_FILE")" |
+    curl -sS --proto "$PROTO" -K - -o "$body" -w '%{http_code}' "$AGENTBOX_URL/gw/_opencode") ||
+    code=000
+  if [ "$code" != 200 ]; then
+    rm -f "$body"
+    return 0
+  fi
+  mkdir -p "$dir"
+  chmod 700 "$dir"
+  mv -f "$body" "$dir/opencode.json"
+  chmod 600 "$dir/opencode.json"
+  ln -s "$PASS_FILE" "$dir/pass"
+  tmp="$BIN/.opencode.tmp"
+  {
+    say '#!/bin/sh'
+    say "# Written by agentbox: runs the real opencode with this machine's agentbox keys."
+    say "# Remove with: agentbox-machine uninstall"
+    say "bin='$BIN'"
+    say "pass_file='$PASS_FILE'"
+    say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
+    say 'path=$(printf "%s" "$PATH" | tr ":" "\n" | grep -vxF "$bin" | paste -s -d: -)'
+    say "real=\$(PATH=\"\$path\" command -v opencode) || { echo \"agentbox: opencode is not installed on this machine yet.\" >&2; exit 127; }"
+    say "unset $OPENCODE_UNSET"
+    say "export OPENCODE_CONFIG='$dir/opencode.json'"
+    say "export OPENCODE_AUTH_CONTENT='{}' OPENCODE_DISABLE_AUTOUPDATE=1"
+    say 'exec "$real" "$@"'
+  } >"$tmp"
+  chmod 700 "$tmp"
+  mv -f "$tmp" "$BIN/opencode"
+  WIRED="$WIRED opencode"
+}
+
 # A "SuperGrok login" key: grok signs in with this machine's pass (the helper
 # below is its auth_provider_command) and sends every request to agentbox,
 # which adds the SuperGrok login from its vault. No xAI token comes to this
@@ -310,7 +378,7 @@ apply_setup() {
   WIRED=''
   MACHINE=''
   EXPIRES=''
-  for cli in $CLIS; do rm -f "$BIN/$cli"; done
+  for cli in $CLIS opencode; do rm -f "$BIN/$cli"; done
   rm -f "$BIN/.agentbox-grok-token" "$BIN/.agentbox-codex-token"
   while IFS="$TAB" read -r kind a b c d; do
     case "$kind" in
@@ -338,6 +406,7 @@ apply_setup() {
   done <<EOF
 $SETUP
 EOF
+  write_opencode
   # Keep a copy of this tool for status, refresh and uninstall.
   curl -fsS --proto "$PROTO" -o "$BIN/.agentbox-machine.tmp" "$AGENTBOX_URL/machine.sh" &&
     chmod 700 "$BIN/.agentbox-machine.tmp" && mv -f "$BIN/.agentbox-machine.tmp" "$BIN/agentbox-machine" ||
@@ -415,11 +484,12 @@ case "$cmd" in
           ;;
       esac
     done
+    [ ! -f "$DATA/opencode/opencode.json" ] || say '  opencode → every key above that OpenCode can use'
     ;;
   uninstall)
     for rc in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.bashrc" \
       "$HOME/.zshrc" "$HOME/.zprofile"; do strip_block "$rc"; done
-    rm -rf "$BIN" "$DATA/codex" "$DATA/grok" "$DATA/grok-login" "$DATA/gemini" "$CONF"
+    rm -rf "$BIN" "$DATA/codex" "$DATA/grok" "$DATA/grok-login" "$DATA/gemini" "$DATA/opencode" "$CONF"
     rmdir "$DATA" 2>/dev/null || true
     say 'Removed agentbox from this computer. Also stop the machine in agentbox → Machines.'
     ;;

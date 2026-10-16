@@ -18,6 +18,7 @@ export const TERMINAL_PRESETS = [
   { id: 'grok', label: 'Grok', command: 'grok' },
   { id: 'kimi', label: 'Kimi', command: 'kimi' },
   { id: 'gemini', label: 'Gemini', command: 'gemini' },
+  { id: 'opencode', label: 'OpenCode', command: 'opencode' },
 ] as const;
 export type TerminalPresetId = (typeof TERMINAL_PRESETS)[number]['id'];
 export const terminalPresetSchema = z.enum(

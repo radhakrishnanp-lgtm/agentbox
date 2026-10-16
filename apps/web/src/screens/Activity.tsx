@@ -6,7 +6,7 @@ import { Button } from '../components/ui/button.tsx';
 import { Card } from '../components/ui/card.tsx';
 import { Alert, Badge, EmptyState, Skeleton } from '../components/ui/feedback.tsx';
 import { api, errorMessage } from '../lib/api.ts';
-import { dateTime, relativeTime } from '../lib/format.ts';
+import { dateTime, describeClient, relativeTime } from '../lib/format.ts';
 
 const LABELS: Record<string, string> = {
   'setup.link_created': 'Setup link created',
@@ -48,6 +48,7 @@ const LABELS: Record<string, string> = {
   'machine.ip_allowed': 'New address allowed for a machine',
   'machine.ip_ignored': 'New address refused for a machine',
   'machine.bad_pass_lockout': 'Address locked after wrong machine passes',
+  'machine.setup': 'Computer set up with a machine pass',
   'terminal.created': 'Terminal session started',
   'terminal.renamed': 'Terminal session renamed',
   'terminal.killed': 'Terminal session closed',
@@ -83,6 +84,97 @@ function describe(e: AuditEntry): string {
   if (typeof d.name === 'string') parts.push(`“${d.name}”`);
   if (typeof d.reason === 'string') parts.push(`(${d.reason.replace(/_/g, ' ')})`);
   return parts.join(' ');
+}
+
+/** "LAPTOP-7 · user krish · Windows 11", from what the computer's setup reported. */
+function computerLine(e: AuditEntry): string | null {
+  const c = e.details.computer;
+  if (!c || typeof c !== 'object') return null;
+  const { host, user, os } = c as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof host === 'string' && host) parts.push(host);
+  if (typeof user === 'string' && user) parts.push(`user ${user}`);
+  if (typeof os === 'string' && os) parts.push(os);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+const DETAIL_LABELS: Record<string, string> = {
+  client: 'Program',
+  computer: 'Computer',
+  name: 'Name',
+  previousIp: 'Previous address',
+  deviceName: 'Device',
+  userAgent: 'Browser',
+};
+
+function detailLabel(key: string): string {
+  const spaced = key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ');
+  return DETAIL_LABELS[key] ?? spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
+function detailValue(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    return Object.entries(v)
+      .map(([k, x]) => `${k}: ${typeof x === 'string' ? x : JSON.stringify(x)}`)
+      .join(', ');
+  }
+  return JSON.stringify(v);
+}
+
+/** Who did it: you in the browser, a machine pass, or agentbox itself. */
+const ACTORS: Record<string, string> = {
+  owner: 'You',
+  system: 'agentbox',
+  gateway: 'agentbox gateway',
+  anonymous: 'Someone not signed in',
+  cli: 'agentbox command on the server',
+};
+
+function actorLabel(e: AuditEntry): string {
+  const name = typeof e.details.name === 'string' ? e.details.name : null;
+  if (e.actor.startsWith('machine:')) return name ? `Machine “${name}”` : 'A machine pass';
+  if (e.actor.startsWith('device:')) return 'You, on a signed-in device';
+  return ACTORS[e.actor] ?? e.actor;
+}
+
+function EntryMeta({ e }: { e: AuditEntry }) {
+  const computer = computerLine(e);
+  const client = typeof e.details.client === 'string' ? describeClient(e.details.client) : null;
+  if (!computer && !client) return null;
+  return (
+    <span className="basis-full text-xs text-muted">
+      {computer ? <span>Computer: {computer}</span> : null}
+      {computer && client ? <span aria-hidden> · </span> : null}
+      {client ? <span>Via {client}</span> : null}
+    </span>
+  );
+}
+
+function EntryDetails({ e }: { e: AuditEntry }) {
+  const rows: [string, string][] = [
+    ['Done by', actorLabel(e)],
+    ['Recorded as', e.actor],
+    ...(e.ip ? ([['Address', e.ip]] as [string, string][]) : []),
+    ...Object.entries(e.details).map(([k, v]): [string, string] => [
+      detailLabel(k),
+      detailValue(v),
+    ]),
+    ['Entry', `#${String(e.seq)} · ${dateTime(e.ts)}`],
+  ];
+  return (
+    <details className="basis-full text-sm">
+      <summary className="cursor-pointer text-xs text-muted select-none">Details</summary>
+      <dl className="mt-1 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-0.5 text-xs">
+        {rows.map(([k, v], i) => (
+          <div key={i} className="contents">
+            <dt className="text-muted">{k}</dt>
+            <dd className="font-mono break-all">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
 }
 
 export function Activity() {
@@ -189,6 +281,8 @@ export function Activity() {
                   </time>
                   {e.ip ? <span className="ml-2 font-mono text-xs">{e.ip}</span> : null}
                 </span>
+                <EntryMeta e={e} />
+                <EntryDetails e={e} />
               </li>
             ))}
           </ol>

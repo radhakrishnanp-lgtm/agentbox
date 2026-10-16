@@ -13,14 +13,15 @@
 import { Transform } from 'node:stream';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { request as upstreamRequest, Agent } from 'undici';
-import { passSchema } from '@agentbox/shared';
+import { passSchema, type MachineComputer } from '@agentbox/shared';
 import type { TermdCodexToken, TermdGrokToken } from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { MINUTE, iso } from '../lib/clock.ts';
 import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
-import { ipAllowed, type AiKeyRow, type MachineRow } from './store.ts';
+import { opencodeConfig } from './opencode.ts';
+import { addressCheck, type AiKeyRow, type MachineRow } from './store.ts';
 import {
   TraceCollector,
   isModelCall,
@@ -84,7 +85,8 @@ const DROP_REQUEST = new Set([
   // Set by agentbox for ChatGPT logins; never taken from the machine.
   'chatgpt-account-id',
 ]);
-const DROP_REQUEST_PATTERN = /^(x-forwarded-|cf-|sec-|x-amzn-)|(token|secret|password|cookie)/i;
+const DROP_REQUEST_PATTERN =
+  /^(x-forwarded-|x-agentbox-|cf-|sec-|x-amzn-)|(token|secret|password|cookie)/i;
 /** Kept although they match the pattern: flags, not credentials. */
 const KEEP_REQUEST = new Set([
   // The Grok CLI marks subscription requests with "X-XAI-Token-Auth: xai-grok-cli".
@@ -115,6 +117,38 @@ type ErrorType =
   | 'rate_limit_error'
   | 'invalid_request_error'
   | 'api_error';
+
+const COMPUTER_FIELD_MAX = 80;
+
+/** One X-Agentbox-* header from the setup script, cut down to safe characters. */
+function computerField(request: FastifyRequest, name: string): string {
+  const raw = request.headers[`x-agentbox-${name}`];
+  return (typeof raw === 'string' ? raw : '')
+    .replace(/[^A-Za-z0-9 ._()/@+:,-]/g, '')
+    .trim()
+    .slice(0, COMPUTER_FIELD_MAX);
+}
+
+/** The computer the setup script says it runs on, if it said. Self-reported, not proof. */
+function reportedComputer(request: FastifyRequest): Omit<MachineComputer, 'at'> | null {
+  const host = computerField(request, 'host');
+  const user = computerField(request, 'user');
+  const os = computerField(request, 'os');
+  if (!host && !user && !os) return null;
+  return { ip: request.ip, host, user, os };
+}
+
+/** What this request says about its computer, or else what the last setup from its address said. */
+function computerAt(
+  request: FastifyRequest,
+  m: MachineRow,
+): Omit<MachineComputer, 'at'> | MachineComputer | null {
+  return reportedComputer(request) ?? m.computers.find((c) => c.ip === request.ip) ?? null;
+}
+
+function computerDetails(c: Omit<MachineComputer, 'at'> | null): Record<string, unknown> {
+  return c ? { computer: { host: c.host, user: c.user, os: c.os } } : {};
+}
 
 /** Errors shaped so Anthropic, OpenAI and Gemini clients all show the message. */
 function fail(
@@ -350,8 +384,10 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       }
       // A pass that locks itself belongs to the first address that uses it.
       if (m.approveNewIps && m.ipRules.length === 0) return s.gateway.lockToFirstIp(m, request.ip);
-      if (!ipAllowed(request.ip, m.ipRules)) {
-        if (m.approveNewIps) s.gateway.markPendingIp(m.id, request.ip);
+      const where = addressCheck(request.ip, m.ipRules, m.ipOff);
+      if (!where.allowed) {
+        // An address you turned off stays off; it doesn't ask to be allowed again.
+        if (m.approveNewIps && !where.turnedOff) s.gateway.markPendingIp(m.id, request.ip);
         if (state.shouldAudit(`${m.id}:ip:${request.ip}`, now)) {
           s.audit.record({
             actor: `machine:${m.id}`,
@@ -359,23 +395,31 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             targetType: 'machine',
             targetId: m.id,
             ip: request.ip,
-            details: { name: m.name, ...(m.approveNewIps ? { waitingForYou: true } : {}) },
+            details: {
+              name: m.name,
+              ...computerDetails(computerAt(request, m)),
+              ...(where.turnedOff ? { turnedOff: true } : {}),
+              ...(m.approveNewIps && !where.turnedOff ? { waitingForYou: true } : {}),
+            },
           });
         }
         return fail(
           reply,
           403,
           'permission_error',
-          m.approveNewIps
-            ? `this computer's address (${request.ip}) is new for this machine. Allow it in agentbox → Machines, then try again.`
-            : `this machine's pass is locked to other addresses (this one is ${request.ip}).`,
+          where.turnedOff
+            ? `this computer's address (${request.ip}) is turned off for this machine. Turn it on in agentbox → Machines.`
+            : m.approveNewIps
+              ? `this computer's address (${request.ip}) is new for this machine. Allow it in agentbox → Machines, then try again.`
+              : `this machine's pass is locked to other addresses (this one is ${request.ip}).`,
         );
       }
       return m;
     };
 
     /** Records use, and writes a security event the first time and whenever the address changes. */
-    const seen = (m: MachineRow, ip: string) => {
+    const seen = (m: MachineRow, request: FastifyRequest) => {
+      const ip = request.ip;
       if (m.lastIp !== ip) {
         s.audit.record({
           actor: `machine:${m.id}`,
@@ -383,7 +427,11 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           targetType: 'machine',
           targetId: m.id,
           ip,
-          details: { name: m.name, ...(m.lastIp ? { previousIp: m.lastIp } : {}) },
+          details: {
+            name: m.name,
+            ...(m.lastIp ? { previousIp: m.lastIp } : {}),
+            ...computerDetails(computerAt(request, m)),
+          },
         });
       }
       s.gateway.markSeen(m.id, ip);
@@ -461,7 +509,19 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
     app.get('/gw/_machine', { config: { rateLimit: false } }, async (request, reply) => {
       const m = authenticate(request, reply, undefined);
       if (!('id' in m)) return m;
-      seen(m, request.ip);
+      seen(m, request);
+      // The setup script says which computer it runs on, so Activity can name it.
+      const computer = reportedComputer(request);
+      if (computer && s.gateway.noteComputer(m, computer)) {
+        s.audit.record({
+          actor: `machine:${m.id}`,
+          action: 'machine.setup',
+          targetType: 'machine',
+          targetId: m.id,
+          ip: request.ip,
+          details: { name: m.name, ...computerDetails(computer) },
+        });
+      }
       const keys = s.gateway.activeKeys().filter((k) => m.keyIds.includes(k.id));
       const expires = m.expiresAt === null ? 'until stopped' : iso(m.expiresAt);
       reply.header('cache-control', 'no-store');
@@ -491,6 +551,17 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           url: s.gateway.gatewayUrl(k.slug),
         })),
       });
+    });
+
+    // OpenCode's settings for the setup script to save; 204 when no key suits OpenCode.
+    app.get('/gw/_opencode', { config: { rateLimit: false } }, async (request, reply) => {
+      const m = authenticate(request, reply, undefined);
+      if (!('id' in m)) return m;
+      const keys = s.gateway.activeKeys().filter((k) => m.keyIds.includes(k.id));
+      const config = opencodeConfig(keys, (slug) => s.gateway.gatewayUrl(slug));
+      reply.header('cache-control', 'no-store');
+      if (!config) return reply.code(204).send();
+      return reply.type('application/json').send(`${JSON.stringify(config, null, 2)}\n`);
     });
 
     app.route({
@@ -607,7 +678,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           }
         }
 
-        seen(m, request.ip);
+        seen(m, request);
 
         let secret: string;
         let accountId: string | undefined;
