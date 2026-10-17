@@ -203,8 +203,28 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
 
     const report = await pc.pwsh(pc.script, [], { AGENTBOX_PASS: pass });
     expect(report).toContain('This computer is set up as "windows-pc"');
-    expect(report).toContain('These commands now use your agentbox keys: claude codex');
+    expect(report).toContain('These commands now use your agentbox keys: claude codex opencode');
     expect(report).toContain('claude: install the claude CLI as usual');
+    // OpenCode reads the pass file next to its settings; the pass is in neither.
+    const ocText = readFileSync(join(pc.data, 'opencode', 'opencode.json'), 'utf8');
+    expect(ocText).not.toContain(pass);
+    const oc = JSON.parse(ocText) as {
+      provider: Record<string, { options: { apiKey: string } }>;
+      enabled_providers: string[];
+    };
+    expect(oc.enabled_providers).toEqual(['anthropic', 'openai']);
+    expect(oc.provider.openai?.options.apiKey).toBe('{file:../pass}');
+    const ocCmd = readFileSync(join(pc.bin, 'opencode.cmd'), 'utf8');
+    expect(ocCmd).not.toContain(pass);
+    expect(ocCmd).toContain(
+      'set "OPENCODE_CONFIG=%LOCALAPPDATA%\\agentbox\\opencode\\opencode.json"',
+    );
+    expect(ocCmd).toContain('set "OPENCODE_AUTH_CONTENT={}"');
+    expect(ocCmd).toContain('set "ANTHROPIC_API_KEY="');
+    // agentbox knows which computer and user set it up.
+    const computers = h.services.gateway.listMachines()[0]?.computers ?? [];
+    expect(computers).toHaveLength(1);
+    expect(computers[0]?.os).not.toBe('');
     expect(readFileSync(join(pc.data, 'pass'), 'utf8')).toBe(`${pass}\r\n`);
     expect(existsSync(join(pc.bin, 'claude.cmd'))).toBe(true);
     expect(existsSync(join(pc.bin, 'codex.cmd'))).toBe(true);
@@ -232,7 +252,9 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
     });
     expect(edit.statusCode, edit.body).toBe(200);
     const refreshed = await pc.pwsh(tool, ['refresh'], { AGENTBOX_CLI: '1', AGENTBOX_FRESH: '1' });
-    expect(refreshed).toContain('These commands now use your agentbox keys: claude codex grok');
+    expect(refreshed).toContain(
+      'These commands now use your agentbox keys: claude codex grok opencode',
+    );
     expect(existsSync(join(pc.bin, 'grok.cmd'))).toBe(true);
 
     // Without AGENTBOX_FRESH it fetches the newest script and runs that, which here

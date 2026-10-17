@@ -1,6 +1,6 @@
 # Use your AI CLIs on any computer (key gateway)
 
-Keep your AI keys on agentbox only, and still type `claude`, `codex`, `grok`, `kimi` or `gemini` directly on a GPU server or laptop.
+Keep your AI keys on agentbox only, and still type `claude`, `codex`, `grok`, `kimi`, `gemini` or `opencode` directly on a GPU server or laptop.
 
 ```
  GPU server / laptop                          agentbox (your VPS)                    AI provider
@@ -48,6 +48,7 @@ On that computer, `agentbox-machine status` shows what's set up. After you chang
 - `~/.config/agentbox/pass`: the pass, readable only by you (0600).
 - `~/.local/share/agentbox/bin/`: small wrapper scripts named after each CLI, plus `agentbox-machine`.
 - `~/.local/share/agentbox/codex`, `grok` and `gemini`: those CLIs keep their settings and history here instead of in `~/.codex`, `~/.grok` and `~/.gemini`. This is on purpose: a login already stored on the computer (a ChatGPT, Grok or Google sign-in) is then never read or sent anywhere.
+- `~/.local/share/agentbox/opencode`: OpenCode's settings from agentbox (`opencode.json`) and a link to the pass file. See [OpenCode](#opencode).
 - One PATH line between `# >>> agentbox machine >>>` markers in each of `~/.profile`, `~/.bash_profile`, `~/.bash_login`, `~/.bashrc`, `~/.zshrc` and `~/.zprofile` that exists. bash reads only the first of `.bash_profile`, `.bash_login` and `.profile` when you log in, so all of them get the line. The line puts agentbox's `bin` folder first in PATH, even when it was already there further back (Ubuntu's `.profile` adds `~/.local/bin`, where Claude Code installs itself, after `.bashrc` runs), and it is moved to the end of each file on every refresh.
 
 ### On Windows
@@ -55,6 +56,7 @@ On that computer, `agentbox-machine status` shows what's set up. After you chang
 - `%LOCALAPPDATA%\agentbox\pass`: the pass, readable only by you.
 - `%LOCALAPPDATA%\agentbox\bin\`: small `.cmd` wrappers named after each CLI (`claude.cmd`, `codex.cmd`, …), plus `agentbox-machine.cmd`. They work from PowerShell and the Command Prompt, and need no change to PowerShell's script policy.
 - `%LOCALAPPDATA%\agentbox\codex`, `grok` and `gemini`: the CLIs' own folders, as above.
+- `%LOCALAPPDATA%\agentbox\opencode`: OpenCode's settings from agentbox. They read the pass from `..\pass`.
 - That `bin` folder at the front of your own (user) PATH. Windows reads the system PATH first, so a CLI found there comes before agentbox.
   - If that folder is inside your own user folder (for example `C:\Users\you\.local\bin` from Claude Code's installer), the setup moves it from the system PATH to your own PATH, right after agentbox. Windows asks for administrator permission once; nothing else changes and the CLI stays where it is. If you say no, run `agentbox-machine refresh` to be asked again.
   - A CLI installed for all users (under Program Files) is left alone, since other people may use it. The setup tells you; type `claude.cmd` instead of `claude`, or install the CLI just for your user.
@@ -76,6 +78,7 @@ The pass stops working at once, and answers that are still streaming are cut wit
 
 - **Add address**: type the address or range, and a note if you like, then press **Add address** (or Enter).
 - The pencil button edits an address or its note; the bin button removes it.
+- The switch turns one address off for now without removing it. The pass is then refused from that address with "this computer's address (…) is turned off for this machine", and it doesn't ask you to allow it again. Turn the switch back on and save to let it in again. Activity records which addresses you turned off and on.
 - **Use the address it was last used from** fills in the address agentbox last saw from that computer.
 - Press **Save changes** to apply the list (it asks for your passkey or authenticator code). An address still in the fields is added too.
 
@@ -89,6 +92,14 @@ New machines have **Lock to this computer** on. The pass then works only from th
 - **Keep it blocked** just clears the notice. If you don't know the address, stop the machine.
 
 So a pass copied off the computer, even by someone with root, is useless anywhere else. On that same computer it keeps working until you stop the machine. The connection to agentbox is always HTTPS.
+
+## Who used a pass (Activity)
+
+The setup command and `agentbox-machine refresh` tell agentbox which computer they run on: its name, the account that ran it and the operating system. agentbox remembers up to 20 such computers per machine, shows them on the machine as **Set up on …**, and writes **Computer set up with a machine pass** in **Activity**.
+
+Every machine event in Activity (first use, a new address, a blocked address) then names the computer at that address, and every entry names the program that caused it: a browser ("Chrome on Windows") or a CLI ("Claude Code 2.1.0", "curl 8.5.0"). **Details** under an entry shows everything recorded for it.
+
+The computer name and user are what that computer says about itself. Someone who copied the pass can send other names, so treat them as a hint and the address as the stronger signal. Computers set up before this change show up once they run `agentbox-machine refresh`.
 
 ## What someone with root on that computer can and can't do
 
@@ -158,6 +169,25 @@ agentbox adds the ChatGPT token from the vault to each request and forwards it t
 
 Requests go to `https://api.kimi.com/coding` and count against your Kimi Code plan. Not yet checked against the live Kimi service.
 
+## OpenCode
+
+[OpenCode](https://opencode.ai) talks to many providers, so it gets all of the machine's keys at once. Type `opencode` and pick a model with `/models`; the first key with a model set is the default.
+
+| Key in agentbox                    | In OpenCode                                               |
+| ---------------------------------- | --------------------------------------------------------- |
+| Anthropic API key                  | the Anthropic provider                                    |
+| OpenAI API key                     | the OpenAI provider                                       |
+| xAI API key                        | the xAI provider                                          |
+| Google Gemini API key              | the Google provider                                       |
+| OpenRouter API key                 | the OpenRouter provider                                   |
+| Moonshot or Kimi Code key          | its own provider, named after the key; needs a model      |
+| Moonshot key used from Claude Code | its own Anthropic-style provider; needs a model           |
+| Claude Pro/Max, ChatGPT, SuperGrok | **not used:** those logins are allowed only in their apps |
+
+How it's wired: the wrapper points `OPENCODE_CONFIG` at the settings agentbox wrote, ignores logins stored in OpenCode itself (`OPENCODE_AUTH_CONTENT={}`), turns auto-update off and removes provider keys such as `ANTHROPIC_API_KEY` from its environment. The settings read the pass from a file (`{file:pass}`), so the pass is in neither the settings nor the environment. Sharing is off. Your own OpenCode settings and a project's `opencode.json` still apply on top.
+
+OpenCode still downloads its public model list from models.dev, without any key. Tested with OpenCode 1.19 against a stand-in provider through agentbox. Whether Kimi Code's plan accepts requests from OpenCode is not checked yet.
+
 ## How each CLI is wired
 
 Each recipe was run with the real CLI (versions below) in an isolated network: the CLI reached only agentbox, the provider received the real key and never the pass, and a login stored on the computer was not used or sent.
@@ -168,6 +198,7 @@ Each recipe was run with the real CLI (versions below) in an isolated network: t
 | Codex 0.159                                     | `CODEX_HOME` = its own folder, and `-c` options for an `agentbox` provider (`base_url` = gateway `/v1`, `wire_api = "responses"`, key from `AGENTBOX_CODEX_KEY`), with analytics, plugins, apps and the update check off. On Windows the `-c` values have no quotes; Codex reads a value that isn't TOML as text.                                              |
 | Grok: official xAI CLI and open-source Grok CLI | `XAI_API_KEY` and `GROK_API_KEY` = pass, `GROK_XAI_API_BASE_URL` and `GROK_BASE_URL` = gateway `/v1`, `GROK_HOME` = its own folder, telemetry and auto-update off.                                                                                                                                                                                             |
 | Kimi Code 2.1 and kimi-cli 1.51                 | `KIMI_MODEL_BASE_URL`, `KIMI_MODEL_API_KEY`, `KIMI_MODEL_NAME` (Kimi Code) and `KIMI_BASE_URL`, `KIMI_API_KEY` (kimi-cli), telemetry and auto-update off.                                                                                                                                                                                                      |
+| OpenCode 1.19                                   | `OPENCODE_CONFIG` = the settings from agentbox (see [OpenCode](#opencode)), `OPENCODE_AUTH_CONTENT={}`, `OPENCODE_DISABLE_AUTOUPDATE=1`. Removes provider keys and `OPENCODE_CONFIG_CONTENT`.                                                                                                                                                                  |
 | Gemini CLI 0.61                                 | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` = pass, `GEMINI_CLI_HOME` = its own folder with API-key sign-in and usage statistics off, `GEMINI_CLI_TRUST_WORKSPACE=true` unless you set it yourself.                                                                                                                                                             |
 
 Things to know:

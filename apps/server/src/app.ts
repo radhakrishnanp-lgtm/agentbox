@@ -24,6 +24,7 @@ import { gatewayRoutes } from './gateway/relay.ts';
 import { trackerRoutes } from './routes/tracker.ts';
 import { machineScriptRoutes } from './gateway/script.ts';
 import { auditRoutes } from './routes/audit.ts';
+import { cleanClient, requestContext } from './audit/audit.ts';
 import { authRoutes } from './routes/auth.ts';
 import { gatewayAdminRoutes } from './routes/gateway.ts';
 import { healthRoutes } from './routes/health.ts';
@@ -79,6 +80,10 @@ export async function buildApp(s: Services, opts: BuildOptions = {}): Promise<Fa
   app.decorateRequest('auth', null);
   app.addHook('onRequest', async (request, reply) => {
     reply.header('X-Request-Id', request.id);
+  });
+  // Every audit entry written while handling this request names its browser or CLI.
+  app.addHook('onRequest', (request, _reply, done) => {
+    requestContext.run({ client: cleanClient(request.headers['user-agent']) }, done);
   });
 
   app.setErrorHandler((err: FastifyError | AppError, request, reply) => {

@@ -23,6 +23,30 @@ export function describeUserAgent(ua: string): string {
   return `${browser} on ${os}`;
 }
 
+const CLI_NAMES: [RegExp, string][] = [
+  [/^claude-cli$/i, 'Claude Code'],
+  [/^codex/i, 'Codex'],
+  [/^opencode$/i, 'OpenCode'],
+  [/^grok/i, 'Grok CLI'],
+  [/^GeminiCLI$/i, 'Gemini CLI'],
+  [/^curl$/i, 'curl'],
+];
+
+/**
+ * Short label for the program behind a request: "Chrome on Windows" for a
+ * browser, "Claude Code 2.1.0" for a CLI. The raw text is shown in Details.
+ */
+export function describeClient(ua: string): string {
+  const ps = /PowerShell\/([\d.]+)/.exec(ua);
+  if (ps) return `PowerShell ${ps[1] ?? ''}`.trim();
+  if (/^Mozilla\//.test(ua)) return describeUserAgent(ua);
+  const first = /^([^/\s]+)(?:\/([^\s]+))?/.exec(ua);
+  if (!first) return ua;
+  const [, product = '', version] = first;
+  const name = CLI_NAMES.find(([re]) => re.test(product))?.[1] ?? product;
+  return version ? `${name} ${version}` : name;
+}
+
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 
 export function relativeTime(iso: string, now = Date.now()): string {

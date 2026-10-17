@@ -19,6 +19,7 @@ import {
   type LogsPeriod,
   type AiKeySummary,
   type KeyAuthStyle,
+  type MachineComputer,
   type MachineSummary,
   type GatewayCli,
 } from '@agentbox/shared';
@@ -33,6 +34,9 @@ import { newId } from '../lib/ids.ts';
 
 export type AiKeyRow = typeof aiKey.$inferSelect;
 export type MachineRow = typeof machine.$inferSelect;
+
+/** Computers remembered per machine pass. */
+const COMPUTERS_MAX = 20;
 
 export function dayOf(ms: number): number {
   return Math.floor(ms / DAY);
@@ -223,6 +227,7 @@ export class GatewayStore {
       keyIds: m.keyIds,
       ipRules: m.ipRules,
       ipLabels: m.ipLabels,
+      ipOff: m.ipOff,
       rpm: m.rpm,
       dailyTokenLimit: m.dailyTokenLimit,
       createdAt: iso(m.createdAt),
@@ -233,6 +238,7 @@ export class GatewayStore {
       approveNewIps: m.approveNewIps,
       pendingIp: m.pendingIp,
       pendingIpAt: m.pendingIpAt === null ? null : iso(m.pendingIpAt),
+      computers: m.computers,
       today,
     };
   }
@@ -252,6 +258,7 @@ export class GatewayStore {
       keyIds: string[];
       ipRules: string[];
       ipLabels?: Record<string, string> | undefined;
+      ipOff?: string[] | undefined;
       rpm: number;
       dailyTokenLimit: number | null;
       lifetimeDays: number | null;
@@ -272,6 +279,7 @@ export class GatewayStore {
       keyIds: [...new Set(input.keyIds)],
       ipRules,
       ipLabels: normaliseIpLabels(ipRules, input.ipLabels ?? {}),
+      ipOff: normaliseIpOff(ipRules, input.ipOff ?? []),
       rpm: input.rpm,
       dailyTokenLimit: input.dailyTokenLimit,
       expiresAt: input.lifetimeDays === null ? null : now + input.lifetimeDays * DAY,
@@ -281,6 +289,7 @@ export class GatewayStore {
       approveNewIps: input.approveNewIps,
       pendingIp: null,
       pendingIpAt: null,
+      computers: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -311,6 +320,7 @@ export class GatewayStore {
       keyIds?: string[] | undefined;
       ipRules?: string[] | undefined;
       ipLabels?: Record<string, string> | undefined;
+      ipOff?: string[] | undefined;
       rpm?: number | undefined;
       dailyTokenLimit?: number | null | undefined;
       approveNewIps?: boolean | undefined;
@@ -330,6 +340,11 @@ export class GatewayStore {
     if (patch.ipRules !== undefined || patch.ipLabels !== undefined) {
       set.ipLabels = normaliseIpLabels(set.ipRules ?? m.ipRules, patch.ipLabels ?? m.ipLabels);
     }
+    if (patch.ipRules !== undefined || patch.ipOff !== undefined) {
+      const off = normaliseIpOff(set.ipRules ?? m.ipRules, patch.ipOff ?? m.ipOff);
+      // Only written (and listed as changed) when it really changes.
+      if (off.join() !== m.ipOff.join()) set.ipOff = off;
+    }
     if (patch.rpm !== undefined) set.rpm = patch.rpm;
     if (patch.dailyTokenLimit !== undefined) set.dailyTokenLimit = patch.dailyTokenLimit;
     if (patch.approveNewIps !== undefined) set.approveNewIps = patch.approveNewIps;
@@ -347,6 +362,14 @@ export class GatewayStore {
         changed: Object.keys(set).filter((k) => k !== 'updatedAt'),
         ...(set.expiresAt !== undefined
           ? { expiresAt: set.expiresAt === null ? null : iso(set.expiresAt) }
+          : {}),
+        ...(set.ipOff !== undefined
+          ? {
+              turnedOff: set.ipOff.filter((r) => !m.ipOff.includes(r)),
+              turnedOn: m.ipOff.filter(
+                (r) => !(set.ipOff ?? []).includes(r) && (set.ipRules ?? m.ipRules).includes(r),
+              ),
+            }
           : {}),
       },
     });
@@ -496,6 +519,8 @@ export class GatewayStore {
         ...m.ipLabels,
         [rule]: m.ipLabels[rule] ?? 'Allowed after it was blocked',
       });
+      // Allowing an address that was turned off turns it on again.
+      if (m.ipOff.includes(rule)) set.ipOff = m.ipOff.filter((r) => r !== rule);
     }
     this.#db.update(machine).set(set).where(eq(machine.id, id)).run();
     this.#audit.record({
@@ -509,6 +534,21 @@ export class GatewayStore {
     const row = this.getMachine(id);
     if (!row) throw new AppError('not_found', 'That machine was not found.');
     return row;
+  }
+
+  /**
+   * Remembers a computer that set itself up with this pass. Returns false when
+   * it is the same computer at the same address as last time.
+   */
+  noteComputer(m: MachineRow, c: Omit<MachineComputer, 'at'>): boolean {
+    const same = (x: MachineComputer) => x.ip === c.ip && x.host === c.host && x.user === c.user;
+    const known = m.computers.find(same);
+    const computers = [
+      { ...c, at: iso(this.#clock.now()) },
+      ...m.computers.filter((x) => !same(x)),
+    ].slice(0, COMPUTERS_MAX);
+    this.#db.update(machine).set({ computers }).where(eq(machine.id, m.id)).run();
+    return known === undefined || known.os !== c.os || m.computers[0] !== known;
   }
 
   markSeen(id: string, ip: string): void {
@@ -810,6 +850,28 @@ export function normaliseIpLabels(
     if (text && rules.includes(key)) out[key] = text;
   }
   return out;
+}
+
+/** Keeps the turned-off addresses that are still in the list, once each. */
+export function normaliseIpOff(rules: string[], off: string[]): string[] {
+  return [...new Set(off.map((r) => r.trim()))].filter((r) => rules.includes(r));
+}
+
+/**
+ * Whether `ip` may use a machine's pass. An empty list allows every address;
+ * otherwise only the addresses that are turned on count. Says when the address
+ * is in the list but turned off, so the owner can be told why.
+ */
+export function addressCheck(
+  ip: string,
+  rules: string[],
+  off: string[],
+): { allowed: boolean; turnedOff: boolean } {
+  if (rules.length === 0) return { allowed: true, turnedOff: false };
+  const on = rules.filter((r) => !off.includes(r));
+  if (on.length > 0 && ipAllowed(ip, on)) return { allowed: true, turnedOff: false };
+  const offRules = rules.filter((r) => off.includes(r));
+  return { allowed: false, turnedOff: offRules.length > 0 && ipAllowed(ip, offRules) };
 }
 
 /** True when `ip` is allowed by `rules` (an empty list allows every address). */

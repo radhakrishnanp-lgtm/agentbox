@@ -4,6 +4,7 @@
  * The database also blocks UPDATE/DELETE with triggers, and each entry is
  * mirrored to the service log (journald), which the app cannot rewrite.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { desc, lt } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AuditEntry, AuditPage, AuditVerifyResult } from '@agentbox/shared';
@@ -15,6 +16,25 @@ import { iso } from '../lib/clock.ts';
 import { newId } from '../lib/ids.ts';
 
 export const GENESIS_HASH = '0'.repeat(64);
+
+/** What the current request says about the program that sent it. */
+interface RequestContext {
+  /** The browser or CLI, from its user-agent, cleaned and shortened. */
+  client: string;
+}
+
+/** Set for each HTTP request, so every entry records which browser or CLI caused it. */
+export const requestContext = new AsyncLocalStorage<RequestContext>();
+
+const CLIENT_MAX = 160;
+
+/** Printable ASCII only, shortened: user-agents are attacker-chosen text. */
+export function cleanClient(ua: string | undefined): string {
+  return (ua ?? '')
+    .replace(/[^\x20-\x7e]/g, '')
+    .trim()
+    .slice(0, CLIENT_MAX);
+}
 
 export type AuditAction =
   | 'setup.link_created'
@@ -56,6 +76,7 @@ export type AuditAction =
   | 'machine.ip_allowed'
   | 'machine.ip_ignored'
   | 'machine.bad_pass_lockout'
+  | 'machine.setup'
   | 'terminal.created'
   | 'terminal.renamed'
   | 'terminal.killed'
@@ -108,6 +129,11 @@ function entryHash(prevHash: string, r: Omit<Row, 'hash' | 'prevHash'>): string 
   return sha256Hex(`${prevHash}\n${body}`);
 }
 
+function withClient(details: Record<string, unknown>): Record<string, unknown> {
+  const client = requestContext.getStore()?.client;
+  return client && details.client === undefined ? { ...details, client } : details;
+}
+
 export class AuditLog {
   readonly #db: Db;
   readonly #clock: Clock;
@@ -136,7 +162,7 @@ export class AuditLog {
         targetType: input.targetType ?? null,
         targetId: input.targetId ?? null,
         ip: input.ip ?? null,
-        details: stableStringify(input.details ?? {}),
+        details: stableStringify(withClient(input.details ?? {})),
       };
       const prevHash = last?.hash ?? GENESIS_HASH;
       const full: Row = { ...base, prevHash, hash: entryHash(prevHash, base) };

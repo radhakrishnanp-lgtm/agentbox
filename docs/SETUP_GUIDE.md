@@ -60,6 +60,7 @@ A computer can use **one key per CLI**: one for `claude`, one for `codex`, one f
 4. Install any CLI that isn't on that computer yet, the normal way:
    - `npm install -g @anthropic-ai/claude-code`
    - `npm install -g @openai/codex`
+   - `npm install -g opencode-ai` (OpenCode, which can use all your keys)
    - the Kimi Code and Grok installers from their websites
 
 ## 3. Use it
@@ -71,6 +72,7 @@ claude
 codex
 grok
 kimi
+opencode
 ```
 
 There's nothing to sign in to there; agentbox handles it. On Windows, PowerShell and the Command Prompt both work.
@@ -92,6 +94,7 @@ There's nothing to sign in to there; agentbox handles it. On Windows, PowerShell
 | Let it work again                              | **Machines → Start** (asks for your passkey or authenticator code). The same pass works again; nothing to do there |
 | Change its keys, addresses, limits or end date | **Machines → Edit**, then run `agentbox-machine refresh` on that computer                                          |
 | Remove it for good                             | **Machines → Delete**, then `agentbox-machine uninstall` on that computer                                          |
+| Turn one address off for now                   | **Machines → Edit**, flip the switch next to that address, **Save changes**. Flip it back to let it in again       |
 | It moved to a new network and got blocked      | agentbox shows **Blocked a request from …** on the machine: press **Allow this address** if it's yours             |
 | Stop it from SSH on the VPS                    | `sudo agentbox machines stop <name>` or `sudo agentbox machines stop-all`                                          |
 
@@ -119,6 +122,10 @@ Open **Logs** in agentbox. It shows:
 Pick **Last 24 hours** or **Last 7 days**, one computer, or **Only requests that failed**. **CSV** downloads the requests shown. The page refreshes itself every 30 seconds.
 
 The **Usage** tab holds only which computer, key and model, never what was asked or answered. agentbox deletes each record after 7 days by itself.
+
+### Who did what (Activity)
+
+**Activity** lists every sign-in and security change. Each entry now says which program caused it (a browser such as "Chrome on Windows", or a CLI such as "Claude Code 2.1.0"), and machine entries name the computer, its user and operating system as that computer reported them when it was set up. Press **Details** under an entry to see everything recorded for it. Run `agentbox-machine refresh` once on computers set up before this change so they report themselves.
 
 ### Agent tracker (off unless you turn it on)
 

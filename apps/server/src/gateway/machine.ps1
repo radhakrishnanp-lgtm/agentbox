@@ -1,6 +1,6 @@
 # agentbox machine setup for Windows
 #
-# Lets the AI CLIs on this computer (claude, codex, grok, kimi, gemini) use the
+# Lets the AI CLIs on this computer (claude, codex, grok, kimi, gemini, opencode) use the
 # AI keys kept on your agentbox, without storing those keys here. This computer
 # only keeps an agentbox pass, which you can stop at any time in agentbox.
 #
@@ -14,7 +14,7 @@
 # No administrator needed. Everything lives in your own AppData folder:
 #   %LOCALAPPDATA%\agentbox\pass        the pass (only you can read it)
 #   %LOCALAPPDATA%\agentbox\bin\        small wrappers named claude.cmd, codex.cmd, ...
-#   %LOCALAPPDATA%\agentbox\<cli>\      own settings for codex, grok and gemini
+#   %LOCALAPPDATA%\agentbox\<cli>\      own settings for codex, grok, gemini and opencode
 #                                       (grok-login when grok uses your SuperGrok login)
 # plus that bin folder at the front of your own PATH. Only if a CLI installed just
 # for you sits in the system PATH (which Windows searches first) does it ask
@@ -29,6 +29,10 @@
 
   $AgentboxUrl = '@@AGENTBOX_URL@@'
   $Clis = @('claude', 'codex', 'grok', 'kimi', 'gemini')
+  # Would point OpenCode at a provider directly, or swap in other settings.
+  $OpencodeUnset = @('ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'XAI_API_KEY',
+    'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'OPENROUTER_API_KEY', 'MOONSHOT_API_KEY',
+    'OPENCODE_API_KEY', 'OPENCODE_CONFIG_CONTENT', 'OPENCODE_CONFIG_DIR')
   $GeminiSettings = '{"security":{"auth":{"selectedType":"gemini-api-key"}},"privacy":{"usageStatisticsEnabled":false}}'
   $State = @{ Http = $null; Wired = @() }
   $OnWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or ((Test-Path variable:IsWindows) -and $IsWindows)
@@ -67,10 +71,35 @@
     return $State.Http
   }
 
+  # Short, safe text for a header: letters, digits and a little punctuation.
+  function Get-Clean([string]$Text) {
+    $t = ($Text -replace '[^A-Za-z0-9 ._()/@+:,-]', '').Trim()
+    if ($t.Length -gt 80) { $t = $t.Substring(0, 80) }
+    return $t
+  }
+
+  # Which computer this is, so agentbox > Activity can say who used the pass.
+  # It is what this computer says about itself, nothing more.
+  function Get-ComputerInfo {
+    $os = ''
+    try { $os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription } catch { $os = '' }
+    if (-not $os) { $os = [Environment]::OSVersion.VersionString }
+    if ($env:PROCESSOR_ARCHITECTURE) { $os = "$os ($env:PROCESSOR_ARCHITECTURE)" }
+    $hostName = $env:COMPUTERNAME
+    if (-not $hostName) { $hostName = [Environment]::MachineName }
+    $user = $env:USERNAME
+    if (-not $user) { $user = [Environment]::UserName }
+    return [ordered]@{ 'X-Agentbox-Host' = (Get-Clean $hostName); 'X-Agentbox-User' = (Get-Clean $user); 'X-Agentbox-OS' = (Get-Clean $os) }
+  }
+
   function Invoke-Agentbox([string]$Path, [string]$Pass) {
     $http = Get-Http
     $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$AgentboxUrl$Path")
-    if ($Pass) { $request.Headers.TryAddWithoutValidation('Authorization', "Bearer $Pass") | Out-Null }
+    if ($Pass) {
+      $request.Headers.TryAddWithoutValidation('Authorization', "Bearer $Pass") | Out-Null
+      $info = Get-ComputerInfo
+      foreach ($name in $info.Keys) { $request.Headers.TryAddWithoutValidation($name, $info[$name]) | Out-Null }
+    }
     $request.Headers.TryAddWithoutValidation('Accept', 'text/plain') | Out-Null
     try {
       $response = $http.SendAsync($request).GetAwaiter().GetResult()
@@ -346,6 +375,32 @@
     if ($State.Wired -notcontains 'grok') { $State.Wired += 'grok' }
   }
 
+  # OpenCode uses every key of this machine that it can, from one settings file
+  # that agentbox writes (only API keys: subscription logins stay in their own apps).
+  # The settings read the pass file next door ({file:../pass}), so the pass is
+  # never in OpenCode's settings or environment. Logins stored in OpenCode itself
+  # are ignored while it runs through this wrapper.
+  function Write-OpenCode {
+    $dir = Join-Path $Data 'opencode'
+    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    $r = Invoke-Agentbox '/gw/_opencode' (Read-SavedPass)
+    if ($r.Code -ne 200) { return }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $config = $r.Body.Replace('{file:pass}', '{file:../pass}')
+    [IO.File]::WriteAllText((Join-Path $dir 'opencode.json'), $config, (New-Object System.Text.UTF8Encoding($false)))
+    $lines = Get-WrapperHead 'opencode' "runs the real opencode with this machine's agentbox keys."
+    foreach ($name in $OpencodeUnset) { $lines += "set `"$name=`"" }
+    $lines += @(
+      "set `"OPENCODE_CONFIG=$DataCmd\opencode\opencode.json`"",
+      'set "OPENCODE_AUTH_CONTENT={}"',
+      'set "OPENCODE_DISABLE_AUTOUPDATE=1"',
+      '"%agentbox_real%" %*'
+    )
+    $lines += Get-WrapperTail
+    Write-Ascii (Join-Path $Bin 'opencode.cmd') $lines
+    $State.Wired += 'opencode'
+  }
+
   function Expand-Dir([string]$Dir) { return [Environment]::ExpandEnvironmentVariables($Dir).Trim().TrimEnd('\') }
 
   # Your own PATH lives in the registry. It is read and written raw, so entries
@@ -495,7 +550,7 @@ try {
   function Install-Setup($Setup) {
     New-Item -ItemType Directory -Force -Path $Bin | Out-Null
     $State.Wired = @()
-    foreach ($cli in $Clis) { Remove-Item -LiteralPath (Join-Path $Bin "$cli.cmd") -Force -ErrorAction SilentlyContinue }
+    foreach ($cli in ($Clis + 'opencode')) { Remove-Item -LiteralPath (Join-Path $Bin "$cli.cmd") -Force -ErrorAction SilentlyContinue }
     foreach ($helper in @('agentbox-grok-token.cmd', 'agentbox-codex-token.cmd')) { Remove-Item -LiteralPath (Join-Path $Bin $helper) -Force -ErrorAction SilentlyContinue }
     foreach ($k in $Setup.KeyList) {
       if ($k.Slug -cnotmatch '^[a-z][a-z0-9-]{1,30}$') { continue }
@@ -507,6 +562,7 @@ try {
       if ($k.Cli -eq 'grok-login') { Write-GrokLogin $url $model }
       else { Write-Wrapper $k.Cli $url $model }
     }
+    Write-OpenCode
     # Keep a copy of this tool for status, refresh and uninstall.
     try {
       $r = Invoke-Agentbox '/machine.ps1' ''
@@ -606,6 +662,7 @@ try {
           if ($k.Model -ne '-') { $model = ", model $($k.Model)" }
           Say "  $($k.Cli) -> $AgentboxUrl/gw/$($k.Slug) ($($k.Name)$model)"
         }
+        if (Test-Path -LiteralPath (Join-Path $Data 'opencode\opencode.json')) { Say '  opencode -> every key above that OpenCode can use' }
       }
       'uninstall' {
         Set-UserPath $false

@@ -137,7 +137,7 @@ export function Machines() {
     <>
       <PageHeader
         title="Machines"
-        description="Use claude, codex, grok, kimi or gemini on any computer. Your AI keys stay here; each computer gets its own pass that you can stop at any time."
+        description="Use claude, codex, grok, kimi, gemini or opencode on any computer. Your AI keys stay here; each computer gets its own pass that you can stop at any time."
       />
       <div className="space-y-4">
         {overview.status === 'error' ? (
@@ -189,8 +189,8 @@ function SetupSteps({ created, onClose }: { created: MachineCreated; onClose: ()
         </Alert>
         <p className="text-sm text-muted">
           After that, open a new terminal there (PowerShell or Command Prompt on Windows) and use
-          claude, codex, grok, kimi or gemini as usual. They use the keys on agentbox; the computer
-          never gets them.
+          claude, codex, grok, kimi, gemini or opencode as usual. They use the keys on agentbox; the
+          computer never gets them.
         </p>
         <Button variant="secondary" onClick={onClose}>
           Done
@@ -321,13 +321,20 @@ function MachineList({
 
 function addressLine(m: MachineSummary): string {
   if (m.approveNewIps && m.ipRules.length === 0) return 'Locks to the first address that uses it';
-  const named = m.ipRules.map((r) => (m.ipLabels[r] ? `${r} (${m.ipLabels[r]})` : r));
+  const on = m.ipRules.filter((r) => !m.ipOff.includes(r));
+  const named = on.map((r) => (m.ipLabels[r] ? `${r} (${m.ipLabels[r]})` : r));
   const shown =
     named.length > 3
       ? `${named.slice(0, 3).join(', ')} and ${named.length - 3} more`
       : named.join(', ');
-  const where = m.ipRules.length ? `Only from ${shown}` : 'From any address';
-  return m.approveNewIps ? `${where}, new ones need your OK` : where;
+  const off = m.ipRules.length - on.length;
+  const where = !m.ipRules.length
+    ? 'From any address'
+    : on.length
+      ? `Only from ${shown}`
+      : 'No address is turned on, so nothing gets through';
+  const offNote = off ? ` (${String(off)} turned off)` : '';
+  return m.approveNewIps ? `${where}${offNote}, new ones need your OK` : `${where}${offNote}`;
 }
 
 function MachineRow({
@@ -456,6 +463,16 @@ function MachineRow({
               ? ` · pass valid until ${dateTime(m.expiresAt)}`
               : ' · pass valid until stopped'}
         </p>
+        {m.computers.length > 0 ? (
+          <p className="text-sm text-muted">
+            Set up on{' '}
+            {m.computers
+              .slice(0, 3)
+              .map((c) => `${c.host || 'a computer'}${c.user ? ` (${c.user})` : ''} at ${c.ip}`)
+              .join(', ')}
+            {m.computers.length > 3 ? ` and ${String(m.computers.length - 3)} more` : ''}
+          </p>
+        ) : null}
         {m.pendingIp && !m.revokedAt ? (
           <Alert tone="warning" title={`Blocked a request from ${m.pendingIp}`} className="mt-2">
             <p>
@@ -610,6 +627,7 @@ function MachineForm(props: MachineFormProps) {
       keyIds,
       ipRules: list.map((a) => a.rule),
       ipLabels: Object.fromEntries(list.filter((a) => a.label).map((a) => [a.rule, a.label])),
+      ipOff: list.filter((a) => !a.on).map((a) => a.rule),
       rpm: Number(rpm),
       approveNewIps,
       dailyTokenLimit: daily.trim() ? Number(daily.replace(/[,_\s]/g, '')) : null,
@@ -781,12 +799,20 @@ function MachineForm(props: MachineFormProps) {
 interface Address {
   rule: string;
   label: string;
+  /** Off: kept in the list but blocked until turned on again. */
+  on: boolean;
 }
 
 /** The allowed addresses being edited, plus the one typed into the add/edit fields. */
 function useAddressList(machine: MachineSummary | undefined) {
   const [items, setItems] = useState<Address[]>(
-    machine ? machine.ipRules.map((rule) => ({ rule, label: machine.ipLabels[rule] ?? '' })) : [],
+    machine
+      ? machine.ipRules.map((rule) => ({
+          rule,
+          label: machine.ipLabels[rule] ?? '',
+          on: !machine.ipOff.includes(rule),
+        }))
+      : [],
   );
   const [rule, setRule] = useState('');
   const [label, setLabel] = useState('');
@@ -817,7 +843,12 @@ function useAddressList(machine: MachineSummary | undefined) {
       setError(`Use at most ${GATEWAY_LIMITS.ipRulesMax} addresses. Remove one first.`);
       return null;
     }
-    const entry = { rule: r, label: label.trim() };
+    // An edited address keeps its on/off state; a new one starts on.
+    const entry = {
+      rule: r,
+      label: label.trim(),
+      on: editing === null || (items[editing]?.on ?? true),
+    };
     return editing === null ? [...items, entry] : items.map((a, i) => (i === editing ? entry : a));
   };
 
@@ -846,6 +877,9 @@ function useAddressList(machine: MachineSummary | undefined) {
       setLabel(a.label);
       setEditing(i);
       setError(null);
+    },
+    toggle: (i: number) => {
+      setItems(items.map((a, j) => (j === i ? { ...a, on: !a.on } : a)));
     },
     remove: (i: number) => {
       setItems(items.filter((_, j) => j !== i));
@@ -898,10 +932,36 @@ function AddressList({
         >
           {list.items.map((a, i) => (
             <li key={a.rule} className="flex items-center gap-2 py-1 pr-1 pl-3">
-              <span className="min-w-0 flex-1 text-sm">
-                <code className="font-mono break-all">{a.rule}</code>
+              <span className={cn('min-w-0 flex-1 text-sm', a.on ? '' : 'text-muted')}>
+                <code className={cn('font-mono break-all', a.on ? '' : 'line-through')}>
+                  {a.rule}
+                </code>
                 {a.label ? <span className="text-muted"> · {a.label}</span> : null}
+                {a.on ? null : <span className="text-muted"> · turned off</span>}
               </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={a.on}
+                aria-label={`Allow ${a.rule}`}
+                title={
+                  a.on ? 'On: this address can use the pass' : 'Off: blocked until you turn it on'
+                }
+                onClick={() => {
+                  list.toggle(i);
+                }}
+                className={cn(
+                  'relative mx-1 inline-flex h-6 w-10 shrink-0 items-center rounded-full border border-border transition-colors focus-visible:outline-2',
+                  a.on ? 'bg-[var(--accent)]' : 'bg-surface-2',
+                )}
+              >
+                <span
+                  className={cn(
+                    'inline-block size-4 rounded-full bg-white shadow transition-transform',
+                    a.on ? 'translate-x-5' : 'translate-x-1',
+                  )}
+                />
+              </button>
               <Button
                 variant="ghost"
                 size="icon"
