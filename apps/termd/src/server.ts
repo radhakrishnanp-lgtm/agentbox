@@ -170,6 +170,9 @@ export class Termd {
           this.vault.assertUsable();
           await this.tmux.kill(checkName(req.name));
           return { ok: true };
+        case 'capture':
+          this.vault.assertUsable();
+          return { ok: true, text: await this.tmux.capture(checkName(req.name)) };
         case 'vault.init':
           await this.vault.init(passwordOf(req));
           this.#installed = undefined;

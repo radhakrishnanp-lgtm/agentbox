@@ -14,6 +14,8 @@ export type TermdRequest =
   | { op: 'create'; name: string; preset: TerminalPresetId; cols: number; rows: number }
   | { op: 'rename'; name: string; to: string }
   | { op: 'kill'; name: string }
+  /** The session's text: the screen and its recent history, for copying. */
+  | { op: 'capture'; name: string }
   | { op: 'attach'; name: string; cols: number; rows: number }
   | { op: 'vault.init'; password: string }
   | { op: 'vault.unlock'; password: string }
@@ -38,6 +40,10 @@ export interface TermdCodexToken {
   accountId: string;
   /** Epoch milliseconds. */
   expiresAt: number;
+}
+
+export interface TermdCapture {
+  text: string;
 }
 
 export interface TermdOverview {

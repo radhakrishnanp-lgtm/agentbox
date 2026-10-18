@@ -5,7 +5,7 @@
 import { eq } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { TerminalOverview, TerminalPresetId } from '@agentbox/shared';
-import type { TermdOverview } from '@agentbox/shared/termd';
+import type { TermdCapture, TermdOverview } from '@agentbox/shared/termd';
 import type { AuditLog } from '../audit/audit.ts';
 import type { Db } from '../db/client.ts';
 import { vaultKey } from '../db/schema.ts';
@@ -120,6 +120,11 @@ export class Terminals {
   async kill(name: string, by: Actor): Promise<void> {
     await this.#call({ op: 'kill', name });
     this.#record(by, 'terminal.killed', name);
+  }
+
+  /** The session's text, for "Copy all text" in the browser. */
+  async capture(name: string): Promise<string> {
+    return (await this.#call<TermdCapture>({ op: 'capture', name })).text;
   }
 
   opened(name: string, by: Actor): void {

@@ -213,6 +213,25 @@ describe.skipIf(!hasTmux)('agentbox-termd', () => {
     await request(config.socket, { op: 'kill', name: 'live' });
   });
 
+  it("gives a session's text for copying, Tamil included", async () => {
+    await request(config.socket, {
+      op: 'create',
+      name: 'text',
+      preset: 'shell',
+      cols: 80,
+      rows: 24,
+    });
+    await attachAndType(config.socket, 'text', "printf '%s\\n' 'வணக்கம் TEXT-OK'\r", 'TEXT-OK');
+    const res = await request(config.socket, { op: 'capture', name: 'text' });
+    expect(res).toMatchObject({ ok: true });
+    expect(res['text']).toContain('\nவணக்கம் TEXT-OK\n');
+    expect(await request(config.socket, { op: 'capture', name: 'ghost' })).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    await request(config.socket, { op: 'kill', name: 'text' });
+  });
+
   it('stops reading the terminal while agentbox-web says to wait', async () => {
     await request(config.socket, {
       op: 'create',

@@ -172,6 +172,13 @@ describe.skipIf(!hasTmux)('terminals', () => {
     live.ws.send(Buffer.from('echo "cols=$(tput cols)"; echo OUT-$((6*7))\r'));
     await live.until('OUT-42');
     expect(live.text()).toContain('cols=101');
+    // "Copy all text" reads the session as plain text.
+    const text = await laptop.get('/api/terminals/live/text');
+    expect(text.statusCode).toBe(200);
+    expect(text.headers['cache-control']).toBe('no-store');
+    expect(text.json<{ text: string }>().text).toContain('\nOUT-42\n');
+    expect((await laptop.get('/api/terminals/ghost/text')).statusCode).toBe(404);
+    expect((await h.browser('198.51.100.9').get('/api/terminals/live/text')).statusCode).toBe(401);
 
     // 29 minutes pass with typing in between: still signed in (idle limit is 30).
     h.clock.advance(29 * 60_000);

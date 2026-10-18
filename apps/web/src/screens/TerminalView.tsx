@@ -1,6 +1,7 @@
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalServerMessage } from '@agentbox/shared';
 import { FitAddon } from '@xterm/addon-fit';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { WebglAddon } from '@xterm/addon-webgl';
@@ -10,6 +11,7 @@ import { toast } from 'sonner';
 import { IdleWarning } from '../components/IdleWarning.tsx';
 import { Link } from '../components/Layout.tsx';
 import { Button } from '../components/ui/button.tsx';
+import { api, errorMessage } from '../lib/api.ts';
 import { cn } from '../lib/cn.ts';
 import { useAuth } from '../state/auth.tsx';
 
@@ -32,6 +34,42 @@ const ACK_EVERY = 8 * 1024;
 
 type Status = { kind: 'connecting' } | { kind: 'open' } | { kind: 'closed'; message: string };
 
+/** Text sizes the menu steps through. The choice is kept in this browser. */
+const FONT_SIZES = [11, 12, 13, 14, 16, 18, 20, 24] as const;
+const FONT_SIZE_KEY = 'agentbox.terminal.fontSize';
+
+function savedFontSize(): number {
+  try {
+    const n = Number(localStorage.getItem(FONT_SIZE_KEY));
+    if ((FONT_SIZES as readonly number[]).includes(n)) return n;
+  } catch {
+    // No storage: use the default.
+  }
+  return window.matchMedia('(max-width: 640px)').matches ? 13 : 14;
+}
+
+/**
+ * Text a program put on the clipboard with OSC 52 ("52;c;<base64>"). tmux does
+ * this when you select with the mouse. Requests to read the clipboard ("?") are
+ * ignored, so nothing in a terminal can read what you copied elsewhere.
+ */
+export function osc52Text(data: string): string | null {
+  const b64 = data.slice(data.indexOf(';') + 1);
+  if (!b64 || b64 === '?' || b64.length > 4 * 1024 * 1024) return null;
+  try {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+async function writeClipboard(text: string): Promise<void> {
+  await navigator.clipboard.writeText(text);
+}
+
+type Menu = { x: number; y: number } | null;
+
 export function TerminalView({ name }: { name: string }) {
   const { refresh } = useAuth();
   const host = useRef<HTMLDivElement>(null);
@@ -41,6 +79,12 @@ export function TerminalView({ name }: { name: string }) {
   const [attempt, setAttempt] = useState(0);
   const [ctrl, setCtrl] = useState(false);
   const [alt, setAlt] = useState(false);
+  const [menu, setMenu] = useState<Menu>(null);
+  const [fontSize, setFontSize] = useState(savedFontSize);
+  const fontSizeRef = useRef(fontSize);
+  /** What tmux copied last (mouse selection), for "Copy" in the menu. */
+  const lastCopy = useRef('');
+  const refitRef = useRef<() => void>(() => undefined);
   const mods = useRef({ ctrl: false, alt: false });
   useEffect(() => {
     mods.current = { ctrl, alt };
@@ -75,9 +119,12 @@ export function TerminalView({ name }: { name: string }) {
     const t = new Terminal({
       cursorBlink: true,
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-      fontSize: window.matchMedia('(max-width: 640px)').matches ? 13 : 14,
+      fontSize: fontSizeRef.current,
       scrollback: 10_000,
-      allowProposedApi: false,
+      // The grapheme addon below registers its Unicode rules through this API.
+      allowProposedApi: true,
+      // Option-drag on a Mac (Shift-drag elsewhere) selects in the browser, past tmux.
+      macOptionClickForcesSelection: true,
       theme: { background: '#0b0f14', foreground: '#e6edf3', cursor: '#2dd4bf' },
     });
     const fit = new FitAddon();
@@ -89,6 +136,34 @@ export function TerminalView({ name }: { name: string }) {
       }),
     );
     t.open(el);
+    // Keeps a letter and its vowel signs together in one cell, so Tamil, Hindi
+    // and other scripts are drawn as letters instead of dotted circles.
+    t.loadAddon(new UnicodeGraphemesAddon());
+    // Text selected with the mouse in tmux arrives here; put it on the clipboard.
+    const osc52 = t.parser.registerOscHandler(52, (data) => {
+      const text = osc52Text(data);
+      if (text) {
+        lastCopy.current = text;
+        writeClipboard(text).then(
+          () => toast.success('Copied'),
+          () => toast('Selected. Right-click and choose Copy to copy it.'),
+        );
+      }
+      return true;
+    });
+    // Ctrl+Shift+C copies and Ctrl+Shift+V pastes, as in desktop terminals.
+    t.attachCustomKeyEventHandler((e) => {
+      if (!e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return true;
+      if (e.code === 'KeyC') {
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          copySelection();
+        }
+        return false;
+      }
+      // The browser pastes into the terminal by itself.
+      return e.code !== 'KeyV';
+    });
     // Draw with the GPU: busy screens (grok, claude, codex) keep up far better than
     // with the default renderer. Without WebGL, or if it is lost, fall back.
     try {
@@ -172,8 +247,28 @@ export function TerminalView({ name }: { name: string }) {
     const ro = new ResizeObserver(refit);
     ro.observe(el);
     window.visualViewport?.addEventListener('resize', refit);
+    refitRef.current = refit;
+
+    // The right button opens agentbox's menu. It never reaches tmux, whose own
+    // menu would otherwise open.
+    const swallowRight = (e: MouseEvent) => {
+      if (e.button === 2) e.stopPropagation();
+    };
+    const openMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setMenu({ x: e.clientX, y: e.clientY });
+    };
+    el.addEventListener('mousedown', swallowRight, true);
+    el.addEventListener('mouseup', swallowRight, true);
+    el.addEventListener('contextmenu', openMenu, true);
 
     return () => {
+      el.removeEventListener('mousedown', swallowRight, true);
+      el.removeEventListener('mouseup', swallowRight, true);
+      el.removeEventListener('contextmenu', openMenu, true);
+      refitRef.current = () => undefined;
+      osc52.dispose();
       clearInterval(ackTimer);
       cancelAnimationFrame(raf);
       ro.disconnect();
@@ -188,6 +283,63 @@ export function TerminalView({ name }: { name: string }) {
     };
   }, [name, attempt, refresh, sendTyped]);
 
+  useEffect(() => {
+    fontSizeRef.current = fontSize;
+    const t = term.current;
+    if (t && t.options.fontSize !== fontSize) {
+      t.options.fontSize = fontSize;
+      refitRef.current();
+    }
+    try {
+      localStorage.setItem(FONT_SIZE_KEY, String(fontSize));
+    } catch {
+      // Not kept; fine.
+    }
+  }, [fontSize]);
+
+  /** Shift-drag selects in the browser; a plain drag selects in tmux, which copies at once. */
+  function copySelection() {
+    const text = term.current?.getSelection() || lastCopy.current;
+    if (!text) {
+      toast('Select text first: drag over it with the mouse.');
+      return;
+    }
+    writeClipboard(text).then(
+      () => toast.success('Copied'),
+      () => toast.error("Couldn't copy. Your browser blocked the clipboard."),
+    );
+  }
+
+  const copyAll = () => {
+    // Safari only lets a page write the clipboard straight from a click, so the
+    // text is handed over as a promise.
+    const text = api<{ text: string }>(`/api/terminals/${encodeURIComponent(name)}/text`).then(
+      (r) => r.text,
+    );
+    const write =
+      typeof ClipboardItem !== 'undefined' && 'write' in navigator.clipboard
+        ? navigator.clipboard.write([
+            new ClipboardItem({
+              'text/plain': text.then((s) => new Blob([s], { type: 'text/plain' })),
+            }),
+          ])
+        : text.then(writeClipboard);
+    write.then(
+      () => toast.success('Copied all text'),
+      (err: unknown) => {
+        text.then(
+          () => toast.error("Couldn't copy. Your browser blocked the clipboard."),
+          () => toast.error(errorMessage(err)),
+        );
+      },
+    );
+  };
+
+  const closeMenu = useCallback(() => {
+    setMenu(null);
+    term.current?.focus();
+  }, []);
+
   const pressKey = (seq: string) => {
     send(seq);
     term.current?.focus();
@@ -200,7 +352,7 @@ export function TerminalView({ name }: { name: string }) {
         term.current?.focus();
       })
       .catch(() =>
-        toast.error("Couldn't read the clipboard. Long-press in the terminal to paste."),
+        toast.error("Couldn't read the clipboard. Allow it for this site, or press Ctrl+V."),
       );
   };
   const toggleKeyboard = () => {
@@ -233,6 +385,37 @@ export function TerminalView({ name }: { name: string }) {
 
       <div className="relative min-h-0 flex-1">
         <div ref={host} className="absolute inset-0 p-1" aria-label={`Terminal ${name}`} />
+        {menu ? (
+          <TerminalMenu
+            at={menu}
+            onClose={closeMenu}
+            items={[
+              { label: 'Copy', keys: 'Ctrl+Shift+C', run: copySelection },
+              { label: 'Paste', keys: 'Ctrl+Shift+V', run: paste },
+              { label: 'Copy all text', run: copyAll },
+              {
+                label: 'Select all on screen',
+                run: () => {
+                  term.current?.selectAll();
+                },
+              },
+              {
+                label: 'Bigger text',
+                disabled: fontSize >= Math.max(...FONT_SIZES),
+                run: () => {
+                  setFontSize((n) => FONT_SIZES.find((s) => s > n) ?? n);
+                },
+              },
+              {
+                label: 'Smaller text',
+                disabled: fontSize <= Math.min(...FONT_SIZES),
+                run: () => {
+                  setFontSize((n) => [...FONT_SIZES].reverse().find((s) => s < n) ?? n);
+                },
+              },
+            ]}
+          />
+        ) : null}
         {status.kind === 'closed' ? (
           <div className="absolute inset-x-0 bottom-4 mx-auto flex w-fit max-w-[90%] flex-wrap items-center justify-center gap-3 rounded-[var(--radius-card)] border border-border bg-surface px-4 py-3 text-sm shadow-xl">
             <span>{status.message}</span>
@@ -335,6 +518,98 @@ export function TerminalView({ name }: { name: string }) {
         />
       </div>
       <IdleWarning />
+    </div>
+  );
+}
+
+interface MenuItem {
+  label: string;
+  keys?: string;
+  disabled?: boolean;
+  run: () => void;
+}
+
+/** The right-click (or long-press) menu. Arrow keys move, Enter picks, Esc closes. */
+function TerminalMenu({
+  at,
+  items,
+  onClose,
+}: {
+  at: { x: number; y: number };
+  items: MenuItem[];
+  onClose: () => void;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState(at);
+
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    // Keep the whole menu on screen.
+    const r = el.getBoundingClientRect();
+    setPos({
+      x: Math.max(4, Math.min(at.x, window.innerWidth - r.width - 4)),
+      y: Math.max(4, Math.min(at.y, window.innerHeight - r.height - 4)),
+    });
+    el.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+    const away = (e: PointerEvent) => {
+      if (!el.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('pointerdown', away, true);
+    window.addEventListener('blur', onClose);
+    return () => {
+      document.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('blur', onClose);
+    };
+  }, [at, onClose]);
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onClose();
+      return;
+    }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const buttons = [
+      ...(box.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? []),
+    ];
+    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = e.key === 'ArrowDown' ? i + 1 : i - 1;
+    buttons[(next + buttons.length) % buttons.length]?.focus();
+  };
+
+  return (
+    <div
+      ref={box}
+      role="menu"
+      aria-label="Terminal"
+      className="fixed z-50 min-w-56 rounded-[var(--radius-card)] border border-border bg-surface py-1 text-sm shadow-xl"
+      style={{ left: pos.x, top: pos.y }}
+      onKeyDown={onKeyDown}
+      onContextMenu={(e) => {
+        e.preventDefault();
+      }}
+    >
+      {items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          role="menuitem"
+          disabled={item.disabled}
+          className="flex w-full items-center justify-between gap-6 px-3 py-2 text-left outline-none hover:bg-surface-2 focus-visible:bg-surface-2 disabled:opacity-50"
+          onClick={() => {
+            onClose();
+            item.run();
+          }}
+        >
+          <span>{item.label}</span>
+          {item.keys ? <span className="text-xs text-muted">{item.keys}</span> : null}
+        </button>
+      ))}
+      <p className="border-t border-border px-3 pt-2 pb-1 text-xs text-muted">
+        Drag over text to copy it. Hold Shift (Option on a Mac) to select without copying.
+      </p>
     </div>
   );
 }

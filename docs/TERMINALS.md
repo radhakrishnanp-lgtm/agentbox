@@ -19,6 +19,19 @@ This is where you install your AI CLIs (Claude Code, Codex, Grok, Kimi, Gemini o
 
 On a phone, the bar under the terminal has the keys phones lack: Esc, Tab, Shift-Tab, Ctrl and Alt (tap, then the next key), arrows, Ctrl-C, Paste and a keyboard toggle.
 
+## Copy and paste
+
+- **Drag over text** to copy it. tmux selects it and agentbox puts it on your clipboard straight away ("Copied").
+- **Right-click** (long-press on a phone) for the menu: Copy, Paste, **Copy all text** (the screen and up to 3,000 lines before it, wrapped lines joined), Select all on screen, and Bigger or Smaller text. The text size is kept in this browser.
+- **Ctrl+Shift+C** copies and **Ctrl+Shift+V** pastes, as in desktop terminals. Ctrl+C still stops a program.
+- Hold **Shift** (Option on a Mac) while dragging to select in the browser instead of tmux; then use Copy or Ctrl+Shift+C.
+
+The browser asks once before agentbox may read the clipboard for Paste. Programs in the terminal can put text on the clipboard but never read it.
+
+## Tamil and other languages
+
+Letters with vowel signs (Tamil, Hindi, Bengali, Thai and others) are drawn together as one letter, instead of a letter and a dotted circle. Every terminal gives each letter one fixed-width box, so a few wide letters (for example நா or கொ) can still touch the letter next to them; Bigger text helps. Terminals run with UTF-8 (`LANG=C.UTF-8`), so typing and pasting these scripts works in the shell and in the CLIs.
+
 ## What the vault protects
 
 The terminals run as their own Linux user (`dev` by default). Its home folder, where CLIs keep their logins, settings and installed tools, is a [gocryptfs](https://nuetzlich.net/gocryptfs/) encrypted folder:

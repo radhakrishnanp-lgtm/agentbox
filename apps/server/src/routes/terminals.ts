@@ -58,6 +58,20 @@ export function terminalRoutes(s: Services): FastifyPluginAsyncZod {
       },
     );
 
+    // Plain text of a session for "Copy all text". Read-only, so not recorded in Activity.
+    app.get(
+      '/api/terminals/:name/text',
+      {
+        schema: nameParams,
+        preHandler: requireSession(),
+        config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+      },
+      async (request, reply) => {
+        reply.header('cache-control', 'no-store');
+        return { text: await s.terminals.capture(request.params.name) };
+      },
+    );
+
     app.delete(
       '/api/terminals/:name',
       { schema: nameParams, preHandler: requireSession() },

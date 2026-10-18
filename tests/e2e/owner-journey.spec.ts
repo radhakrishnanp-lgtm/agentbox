@@ -586,6 +586,43 @@ ${machine.home}/.local/share:
   await page.keyboard.press('Enter');
   // The screen is drawn with WebGL (no text in the page), so read it from tmux.
   await expect.poll(() => tmuxScreen('e2e')).toContain('E2E-42');
+  // Tamil and other scripts that join letters and vowel signs.
+  await page.keyboard.type("clear; printf '%s\\n' 'வணக்கம் தமிழ் COPY-ME'");
+  await page.keyboard.press('Enter');
+  await expect.poll(() => tmuxScreen('e2e')).toMatch(/^வணக்கம் தமிழ் COPY-ME$/m);
+  await shot(page, 'terminal-tamil');
+  // Dragging over text selects it in tmux, which puts it on the clipboard.
+  const screen = page.getByLabel('Terminal e2e');
+  const box = await screen.boundingBox();
+  if (!box) throw new Error('no terminal on screen');
+  await page.evaluate('navigator.clipboard.writeText("")');
+  await page.mouse.move(box.x + 6, box.y + 12);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 200, box.y + 12, { steps: 8 });
+  await page.mouse.move(box.x + box.width - 20, box.y + 12, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.getByText('Copied', { exact: true })).toBeVisible();
+  expect(await page.evaluate<string>('navigator.clipboard.readText()')).toContain('COPY-ME');
+  // The right button opens agentbox's menu, not tmux's.
+  await screen.click({ button: 'right', position: { x: 120, y: 60 } });
+  const menu = page.getByRole('menu', { name: 'Terminal' });
+  await expect(menu).toBeVisible();
+  await shot(page, 'terminal-menu');
+  await page.evaluate('navigator.clipboard.writeText("")');
+  await menu.getByRole('menuitem', { name: 'Copy all text' }).click();
+  await expect(page.getByText('Copied all text')).toBeVisible();
+  expect(await page.evaluate<string>('navigator.clipboard.readText()')).toContain(
+    'வணக்கம் தமிழ் COPY-ME',
+  );
+  // Paste from the menu types the clipboard into the terminal.
+  await page.evaluate('navigator.clipboard.writeText("echo PASTED-$((5*5))")');
+  await screen.click({ button: 'right', position: { x: 120, y: 60 } });
+  await menu.getByRole('menuitem', { name: 'Paste' }).click();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => tmuxScreen('e2e')).toContain('PASTED-25');
+  await screen.click({ button: 'right', position: { x: 120, y: 60 } });
+  await menu.getByRole('menuitem', { name: 'Bigger text' }).click();
+  await expect(menu).toBeHidden();
   // Leaving only detaches: the session is still listed.
   await page.getByRole('link', { name: 'Back to terminals' }).click();
   await expect(page.getByText('e2e', { exact: true })).toBeVisible();
