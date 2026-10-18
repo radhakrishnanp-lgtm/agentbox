@@ -307,11 +307,24 @@ describe('machines', () => {
     const get = (pass: string) =>
       gw({ method: 'GET', url: '/gw/_opencode', headers: { authorization: `Bearer ${pass}` } });
 
+    // With no key OpenCode can use, it still gets its own free models.
     const only = await addMachine(subs.map((k) => k.id));
-    expect((await get(only.pass)).statusCode).toBe(204);
+    const free = await get(only.pass);
+    expect(free.statusCode).toBe(200);
+    expect(free.json()).toMatchObject({ provider: {}, enabled_providers: ['opencode'] });
     expect((await get('abx_' + 'x'.repeat(43))).statusCode).toBe(401);
 
-    const both = await addMachine([api.id, kimi.id, ...subs.map((k) => k.id)], { name: 'gpu-2' });
+    // "Other provider" with a model: an OpenAI-compatible provider at its address.
+    const own = await addKey({
+      preset: 'custom',
+      slug: 'my-llm',
+      name: 'My model',
+      upstream: 'https://llm.example.com/v1',
+      model: 'glm-5.3-flash',
+    });
+    const both = await addMachine([api.id, kimi.id, own.id, ...subs.map((k) => k.id)], {
+      name: 'gpu-2',
+    });
     const res = await get(both.pass);
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain(both.pass);
@@ -320,7 +333,17 @@ describe('machines', () => {
       enabled_providers: string[];
       model: string;
     }>();
-    expect(config.enabled_providers).toEqual(['google', 'agentbox-kimi-code']);
+    expect(config.enabled_providers).toEqual([
+      'google',
+      'agentbox-kimi-code',
+      'agentbox-my-llm',
+      'opencode',
+    ]);
+    expect(config.provider['agentbox-my-llm']).toMatchObject({
+      npm: '@ai-sdk/openai-compatible',
+      options: { baseURL: `${ORIGIN}/gw/my-llm` },
+      models: { 'glm-5.3-flash': { name: 'glm-5.3-flash' } },
+    });
     expect(config.model).toBe('agentbox-kimi-code/kimi-for-coding');
     expect(config.provider.google?.options).toEqual({
       baseURL: `${ORIGIN}/gw/gemini/v1beta`,

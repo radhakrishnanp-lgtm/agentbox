@@ -43,7 +43,17 @@ const ROUTES: Record<
   moonshot: { npm: '@ai-sdk/openai-compatible', path: '/v1', needsModel: true },
   'kimi-code': { npm: '@ai-sdk/openai-compatible', path: '/v1', needsModel: true },
   'moonshot-anthropic': { npm: '@ai-sdk/anthropic', path: '/v1', needsModel: true },
+  // "Other provider": any OpenAI-compatible API. Its address is used as the
+  // base URL as typed (usually ending in /v1), so the model must be named.
+  custom: { npm: '@ai-sdk/openai-compatible', path: '', needsModel: true },
 };
+
+/**
+ * OpenCode's own free models need no key and no login. Without a Zen/Go key on
+ * the machine they stay on, and OpenCode reaches opencode.ai for them directly:
+ * there is no key of yours to protect, so they don't go through agentbox.
+ */
+const FREE_MODELS = 'opencode';
 
 /** Only these key kinds. Subscription logins never go to OpenCode. */
 const API_KEY_AUTH = new Set<AiKeyRow['auth']>(['x-api-key', 'bearer', 'x-goog-api-key']);
@@ -57,11 +67,11 @@ const OPENCODE_SERVICES = [
   { id: 'opencode-go', path: '/go/v1' },
 ] as const;
 
-/** The machine's OpenCode settings, or null when none of its keys work with OpenCode. */
+/** The machine's OpenCode settings: its keys that work with OpenCode, and OpenCode's free models. */
 export function opencodeConfig(
   keys: readonly AiKeyRow[],
   gatewayUrl: (slug: string) => string,
-): OpencodeConfig | null {
+): OpencodeConfig {
   const provider: Record<string, Provider> = {};
   let model: string | undefined;
   for (const k of keys) {
@@ -99,7 +109,7 @@ export function opencodeConfig(
     if (model === undefined && k.model) model = `${id}/${k.model}`;
   }
   const ids = Object.keys(provider);
-  if (ids.length === 0) return null;
+  if (!ids.includes(FREE_MODELS)) ids.push(FREE_MODELS);
   return {
     $schema: 'https://opencode.ai/config.json',
     provider,

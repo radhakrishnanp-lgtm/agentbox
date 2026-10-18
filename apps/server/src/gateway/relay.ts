@@ -690,7 +690,6 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       const keys = s.gateway.activeKeys().filter((k) => m.keyIds.includes(k.id));
       const config = opencodeConfig(keys, (slug) => s.gateway.gatewayUrl(slug));
       reply.header('cache-control', 'no-store');
-      if (!config) return reply.code(204).send();
       return reply.type('application/json').send(`${JSON.stringify(config, null, 2)}\n`);
     });
 
