@@ -123,6 +123,13 @@ describe.skipIf(!hasTmux)('agentbox-termd', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('finds CLIs their own installers put outside ~/.local/bin (OpenCode, Grok, Bun)', () => {
+    const path = terminalEnv(config, { USER: 'dev' })['PATH']?.split(':') ?? [];
+    for (const dir of ['.local/bin', '.opencode/bin', '.grok/bin', '.bun/bin']) {
+      expect(path).toContain(join(config.home, dir));
+    }
+  });
+
   it('makes the socket group-only', () => {
     expect(statSync(config.socket).mode & 0o777).toBe(0o660);
   });

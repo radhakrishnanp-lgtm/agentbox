@@ -4,6 +4,7 @@ import {
   ipRuleSchema,
   machineCreateSchema,
   machineUpdateSchema,
+  presetKeyName,
   scheduleText,
   type AiKeySummary,
   type GatewayOverview,
@@ -1422,7 +1423,7 @@ function AddKey({
     for (let i = 2; taken.includes(slug); i++) slug = `${base}-${i}`;
     return slug;
   };
-  const [name, setName] = useState(first?.label.split(' (')[0] ?? '');
+  const [name, setName] = useState(first ? presetKeyName(first) : '');
   const [slug, setSlug] = useState(freeSlug(first?.slug ?? 'key'));
   const [upstream, setUpstream] = useState(first?.upstream ?? '');
   const [secret, setSecret] = useState('');
@@ -1434,7 +1435,7 @@ function AddKey({
     const p = presets.find((x) => x.id === id);
     setPresetId(id);
     if (!p) return;
-    setName(p.label.split(' (')[0] ?? p.label);
+    setName(presetKeyName(p));
     setSlug(freeSlug(p.slug));
     setUpstream(p.upstream);
     setModel(p.defaultModel ?? '');

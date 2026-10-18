@@ -61,6 +61,11 @@ export function terminalEnv(config: TermdConfig, source: NodeJS.ProcessEnv): Nod
     SHELL: config.shell,
     PATH: [
       join(config.home, '.local/bin'),
+      // Where some CLIs' own installers put them (OpenCode, Grok, Bun), so the
+      // presets find them without ~/.bashrc.
+      join(config.home, '.opencode/bin'),
+      join(config.home, '.grok/bin'),
+      join(config.home, '.bun/bin'),
       ...config.pathExtra,
       '/usr/local/bin',
       '/usr/bin',
