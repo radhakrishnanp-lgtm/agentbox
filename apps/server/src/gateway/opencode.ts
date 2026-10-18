@@ -15,7 +15,7 @@ export const OPENCODE_PASS = '{file:pass}';
 interface Provider {
   name: string;
   npm?: string;
-  options: { baseURL: string; apiKey: string };
+  options: { baseURL: string; apiKey: string; headers: Record<string, string> };
   models?: Record<string, { name: string }>;
 }
 
@@ -63,7 +63,12 @@ export function opencodeConfig(
     provider[id] = {
       name: `${k.name} (agentbox)`,
       ...(custom ? { npm: route.npm } : {}),
-      options: { baseURL: `${gatewayUrl(k.slug)}${route.path}`, apiKey: OPENCODE_PASS },
+      options: {
+        baseURL: `${gatewayUrl(k.slug)}${route.path}`,
+        apiKey: OPENCODE_PASS,
+        // The wrapper reads this computer's ID each time OpenCode starts.
+        headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+      },
       ...(k.model ? { models: { [k.model]: { name: k.model } } } : {}),
     };
     if (model === undefined && k.model) model = `${id}/${k.model}`;

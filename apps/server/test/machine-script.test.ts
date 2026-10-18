@@ -16,6 +16,8 @@ import { Harness, type Browser } from './helpers/harness.ts';
 
 const run = promisify(execFile);
 const CLIS = ['claude', 'codex', 'grok', 'kimi', 'gemini', 'opencode'] as const;
+/** Stands in for the computer's own ID (/etc/machine-id), so tests can play several computers. */
+const COMPUTER_ID = 'test-computer-0001-aaaa-bbbbcccc';
 
 let h: Harness;
 let laptop: Browser;
@@ -66,6 +68,7 @@ function computer() {
     ANTHROPIC_API_KEY: 'sk-ant-stale-local-key',
     OPENAI_API_KEY: 'sk-stale-local-key',
     GOOGLE_API_KEY: 'stale-google-key',
+    AGENTBOX_TEST_COMPUTER_ID: COMPUTER_ID,
   };
   const sh = async (script: string, extra: Record<string, string> = {}) =>
     (await run('/bin/sh', ['-c', script], { env: { ...env, ...extra }, timeout: 20_000 })).stdout;
@@ -123,7 +126,7 @@ describe('machine setup script', () => {
 
     const claude = pc.seen('claude');
     expect(claude.vars.get('ANTHROPIC_BASE_URL')).toBe(url('anthropic'));
-    expect(claude.vars.get('ANTHROPIC_AUTH_TOKEN')).toBe(pass);
+    expect(claude.vars.get('ANTHROPIC_AUTH_TOKEN')).toBe(`${pass}.${COMPUTER_ID}`);
     expect(claude.vars.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')).toBe('1');
     expect(claude.vars.has('ANTHROPIC_API_KEY')).toBe(false);
     expect(claude.vars.has('ANTHROPIC_MODEL')).toBe(false);
@@ -134,9 +137,13 @@ describe('machine setup script', () => {
     // background server never sees what this wrapper sets.
     expect(codex.vars.has('AGENTBOX_CODEX_KEY')).toBe(false);
     const codexToken = join(pc.bin, '.agentbox-codex-token');
-    expect((await run('/bin/sh', [codexToken], { env: { HOME: pc.home } })).stdout.trim()).toBe(
-      pass,
-    );
+    expect(
+      (
+        await run('/bin/sh', [codexToken], {
+          env: { HOME: pc.home, AGENTBOX_TEST_COMPUTER_ID: COMPUTER_ID },
+        })
+      ).stdout.trim(),
+    ).toBe(`${pass}.${COMPUTER_ID}`);
     expect(codex.vars.get('CODEX_HOME')).toBe(join(pc.home, '.local/share/agentbox/codex'));
     expect(codex.vars.has('OPENAI_API_KEY')).toBe(false);
     expect(codex.args).toEqual(
@@ -152,8 +159,8 @@ describe('machine setup script', () => {
     expect(codex.args.slice(-2)).toEqual(['--flag', 'two words']);
 
     const grok = pc.seen('grok');
-    expect(grok.vars.get('XAI_API_KEY')).toBe(pass);
-    expect(grok.vars.get('GROK_API_KEY')).toBe(pass);
+    expect(grok.vars.get('XAI_API_KEY')).toBe(`${pass}.${COMPUTER_ID}`);
+    expect(grok.vars.get('GROK_API_KEY')).toBe(`${pass}.${COMPUTER_ID}`);
     expect(grok.vars.get('GROK_XAI_API_BASE_URL')).toBe(`${url('xai')}/v1`);
     expect(grok.vars.get('GROK_BASE_URL')).toBe(`${url('xai')}/v1`);
     expect(grok.vars.get('GROK_HOME')).toBe(join(pc.home, '.local/share/agentbox/grok'));
@@ -161,16 +168,16 @@ describe('machine setup script', () => {
 
     const kimi = pc.seen('kimi');
     expect(kimi.vars.get('KIMI_MODEL_BASE_URL')).toBe(`${url('kimi')}/v1`);
-    expect(kimi.vars.get('KIMI_MODEL_API_KEY')).toBe(pass);
+    expect(kimi.vars.get('KIMI_MODEL_API_KEY')).toBe(`${pass}.${COMPUTER_ID}`);
     expect(kimi.vars.get('KIMI_MODEL_NAME')).toBe('kimi-k2');
     expect(kimi.vars.get('KIMI_BASE_URL')).toBe(`${url('kimi')}/v1`);
-    expect(kimi.vars.get('KIMI_API_KEY')).toBe(pass);
+    expect(kimi.vars.get('KIMI_API_KEY')).toBe(`${pass}.${COMPUTER_ID}`);
     expect(kimi.vars.get('KIMI_DISABLE_TELEMETRY')).toBe('1');
 
     const gemini = pc.seen('gemini');
     const geminiHome = join(pc.home, '.local/share/agentbox/gemini');
     expect(gemini.vars.get('GOOGLE_GEMINI_BASE_URL')).toBe(url('gemini'));
-    expect(gemini.vars.get('GEMINI_API_KEY')).toBe(pass);
+    expect(gemini.vars.get('GEMINI_API_KEY')).toBe(`${pass}.${COMPUTER_ID}`);
     expect(gemini.vars.get('GEMINI_CLI_HOME')).toBe(geminiHome);
     expect(gemini.vars.has('GOOGLE_API_KEY')).toBe(false);
     expect(JSON.parse(readFileSync(join(geminiHome, '.gemini/settings.json'), 'utf8'))).toEqual({
@@ -184,6 +191,7 @@ describe('machine setup script', () => {
     expect(opencode.vars.get('OPENCODE_CONFIG')).toBe(join(ocDir, 'opencode.json'));
     expect(opencode.vars.get('OPENCODE_AUTH_CONTENT')).toBe('{}');
     expect(opencode.vars.get('OPENCODE_DISABLE_AUTOUPDATE')).toBe('1');
+    expect(opencode.vars.get('AGENTBOX_COMPUTER')).toBe(COMPUTER_ID);
     expect(opencode.vars.has('ANTHROPIC_API_KEY')).toBe(false);
     expect(opencode.vars.has('OPENAI_API_KEY')).toBe(false);
     expect([...opencode.vars.values()].some((v) => v.includes(pass))).toBe(false);
@@ -204,6 +212,7 @@ describe('machine setup script', () => {
     expect(oc.provider.anthropic?.options).toEqual({
       baseURL: `${origin}/gw/anthropic/v1`,
       apiKey: '{file:pass}',
+      headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
     });
     expect(oc.provider.google?.options.baseURL).toBe(`${origin}/gw/gemini/v1beta`);
     expect(oc.provider['agentbox-kimi']?.npm).toBe('@ai-sdk/openai-compatible');
@@ -276,7 +285,7 @@ describe('machine setup script', () => {
     const command = grok.vars.get('GROK_AUTH_PROVIDER_COMMAND') ?? '';
     expect(command).toBe(`'${pc.bin}/.agentbox-grok-token'`);
     const out = JSON.parse(await pc.sh(command)) as Record<string, unknown>;
-    expect(out.access_token).toBe(pass);
+    expect(out.access_token).toBe(`${pass}.${COMPUTER_ID}`);
     expect(out.issuer).toBe('https://auth.x.ai');
     expect(JSON.stringify(out)).not.toContain('signature-from-the-vault');
     expect(ask).not.toHaveBeenCalled();
@@ -287,6 +296,39 @@ describe('machine setup script', () => {
 
     await pc.sh('agentbox-machine uninstall');
     expect(existsSync(join(pc.home, '.local/share/agentbox'))).toBe(false);
+  });
+
+  it('ties a locked pass to the computer it was set up on', async () => {
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    const address = h.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('no address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const key = await addKey({ preset: 'anthropic', name: 'Claude', slug: 'anthropic' });
+    await h.reauth(laptop);
+    const created = await laptop.post('/api/gateway/machines', {
+      name: 'home-pc',
+      keyIds: [key.id],
+      dailyTokenLimit: null,
+      computerLock: true,
+    });
+    const { pass } = created.json<MachineCreated>();
+    const pc = computer();
+    const script = join(dir, 'machine.sh');
+    writeFileSync(script, renderMachineScript(base));
+    await pc.sh(`sh '${script}'`, { AGENTBOX_PASS: pass });
+    // The ID is read each time, never written next to the pass.
+    expect(readdirSync(join(pc.home, '.config/agentbox'))).toEqual(['pass']);
+
+    const status = `sh '${script}' status`;
+    expect(await pc.sh(status)).toContain('Machine: home-pc');
+    // The same pass on another computer is refused.
+    await expect(
+      pc.sh(status, { AGENTBOX_TEST_COMPUTER_ID: 'another-computer-9999-ffff' }),
+    ).rejects.toThrow(/belongs to another computer/);
+    const listed = await laptop.get('/api/gateway');
+    expect(
+      listed.json<{ machines: MachineCreated['machine'][] }>().machines[0]?.boundComputer?.label,
+    ).toMatch(/\(.+\)/);
   });
 
   it('puts the PATH line where a login shell will read it, and takes it away again', async () => {

@@ -49,6 +49,9 @@ const LABELS: Record<string, string> = {
   'machine.ip_ignored': 'New address refused for a machine',
   'machine.bad_pass_lockout': 'Address locked after wrong machine passes',
   'machine.setup': 'Computer set up with a machine pass',
+  'machine.computer_bound': 'Machine pass tied to its computer',
+  'machine.other_computer': 'Machine pass used on another computer',
+  'machine.blocked_computer': 'Machine pass refused on another computer',
   'terminal.created': 'Terminal session started',
   'terminal.renamed': 'Terminal session renamed',
   'terminal.killed': 'Terminal session closed',
@@ -74,6 +77,8 @@ const WARN = new Set([
   'machine.ip_changed',
   'machine.blocked_ip',
   'machine.bad_pass_lockout',
+  'machine.other_computer',
+  'machine.blocked_computer',
 ]);
 
 function describe(e: AuditEntry): string {
@@ -103,6 +108,8 @@ const DETAIL_LABELS: Record<string, string> = {
   computer: 'Computer',
   name: 'Name',
   previousIp: 'Previous address',
+  expected: 'Tied to',
+  computerName: 'Computer',
   deviceName: 'Device',
   userAgent: 'Browser',
 };
@@ -268,7 +275,7 @@ export function Activity() {
               <li key={e.seq} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-5 py-3">
                 <span className="font-medium">
                   {LABELS[e.action] ?? e.action}
-                  {WARN.has(e.action) ? (
+                  {WARN.has(e.action) && e.details.sameComputer !== true ? (
                     <Badge tone="warning" className="ml-2 align-middle">
                       Check
                     </Badge>

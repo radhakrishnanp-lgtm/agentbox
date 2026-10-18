@@ -40,7 +40,7 @@ A computer can use **one key per CLI**: one for `claude`, one for `codex`, one f
 1. In agentbox, go to **Machines → Add**.
    - Give it a name, for example "A6000" or "Office PC".
    - Tick the keys it may use, for example Claude, SuperGrok, ChatGPT and Kimi Code.
-   - Keep **Lock to this computer** on.
+   - Keep **Lock to its address** on. For a home computer whose internet address keeps changing, tick **Lock to this computer, from any address** instead: then only that computer can use the pass, from any address.
    - Press create. You'll see a command and the machine's **pass**. The pass is shown only once.
 2. On the other computer, open a terminal (no admin or root needed) and run the command. Paste the pass when it asks.
 
@@ -94,6 +94,8 @@ There's nothing to sign in to there; agentbox handles it. On Windows, PowerShell
 | Let it work again                              | **Machines → Start** (asks for your passkey or authenticator code). The same pass works again; nothing to do there |
 | Change its keys, addresses, limits or end date | **Machines → Edit**, then run `agentbox-machine refresh` on that computer                                          |
 | Remove it for good                             | **Machines → Delete**, then `agentbox-machine uninstall` on that computer                                          |
+| Its home address keeps changing                | **Machines → Edit**, tick **Lock to this computer, from any address**, **Save changes**                            |
+| Moved the pass to a new computer               | **Machines → Edit → Forget this computer**, save, then run the setup command on the new computer                   |
 | Turn one address off for now                   | **Machines → Edit**, flip the switch next to that address, **Save changes**. Flip it back to let it in again       |
 | It moved to a new network and got blocked      | agentbox shows **Blocked a request from …** on the machine: press **Allow this address** if it's yours             |
 | Stop it from SSH on the VPS                    | `sudo agentbox machines stop <name>` or `sudo agentbox machines stop-all`                                          |

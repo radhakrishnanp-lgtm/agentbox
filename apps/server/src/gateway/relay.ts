@@ -13,10 +13,11 @@
 import { Transform } from 'node:stream';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { request as upstreamRequest, Agent } from 'undici';
-import { passSchema, type MachineComputer } from '@agentbox/shared';
+import { normaliseComputerId, splitPass, type MachineComputer } from '@agentbox/shared';
 import type { TermdCodexToken, TermdGrokToken } from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
-import { MINUTE, iso } from '../lib/clock.ts';
+import { DAY, MINUTE, iso } from '../lib/clock.ts';
+import { sha256Hex } from '../lib/crypto.ts';
 import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
@@ -349,9 +350,8 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         const retry = err instanceof AppError ? err.retryAfter : undefined;
         return fail(reply, 429, 'rate_limit_error', BAD_PASS_POLICY.message, retry);
       }
-      const pass = presentedPass(request, queryKey);
-      const m =
-        pass && passSchema.safeParse(pass).success ? s.gateway.machineByPass(pass) : undefined;
+      const presented = splitPass(presentedPass(request, queryKey));
+      let m = presented ? s.gateway.machineByPass(presented.pass) : undefined;
       if (!m) {
         if (s.lockouts.fail(ipKey, BAD_PASS_POLICY)) {
           s.audit.record({
@@ -381,6 +381,67 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           'permission_error',
           `this machine's pass expired on ${iso(m.expiresAt)}. Renew it in agentbox → Machines.`,
         );
+      }
+      // The computer's own ID: in the key after the pass, or (OpenCode) in a header.
+      const header = request.headers['x-agentbox-computer'];
+      const computerId =
+        presented?.computerId ?? normaliseComputerId(typeof header === 'string' ? header : '');
+      const computerHash = computerId ? sha256Hex(`agentbox-computer:${computerId}`) : null;
+      // The first computer that uses the pass is remembered, locked or not.
+      if (computerHash && m.computerHash === null) {
+        const c = computerAt(request, m);
+        const label = c ? [c.host, c.user && `(${c.user})`].filter(Boolean).join(' ') : '';
+        m = s.gateway.bindComputer(m, computerHash, label, request.ip);
+      }
+      const otherComputer = computerHash !== null && m.computerHash !== computerHash;
+      if (m.computerLock) {
+        // Any address, but only this computer.
+        if (computerHash === null) {
+          return fail(
+            reply,
+            403,
+            'permission_error',
+            'this machine works only on its own computer, and this request did not say which computer it is. Run agentbox-machine refresh on it.',
+          );
+        }
+        if (otherComputer) {
+          if (state.shouldAudit(`${m.id}:computer:${computerHash}`, now)) {
+            s.audit.record({
+              actor: `machine:${m.id}`,
+              action: 'machine.blocked_computer',
+              targetType: 'machine',
+              targetId: m.id,
+              ip: request.ip,
+              details: {
+                name: m.name,
+                expected: m.computerLabel ?? '',
+                ...computerDetails(computerAt(request, m)),
+              },
+            });
+          }
+          return fail(
+            reply,
+            403,
+            'permission_error',
+            `this pass belongs to another computer${m.computerLabel ? ` (${m.computerLabel})` : ''}. If you moved it, press "Forget this computer" in agentbox → Machines.`,
+          );
+        }
+        return m;
+      }
+      // Not locked: a second computer using the same pass is worth knowing about.
+      if (otherComputer && state.shouldAudit(`${m.id}:other-computer:${computerHash}`, now, DAY)) {
+        s.audit.record({
+          actor: `machine:${m.id}`,
+          action: 'machine.other_computer',
+          targetType: 'machine',
+          targetId: m.id,
+          ip: request.ip,
+          details: {
+            name: m.name,
+            expected: m.computerLabel ?? '',
+            ...computerDetails(computerAt(request, m)),
+          },
+        });
       }
       // A pass that locks itself belongs to the first address that uses it.
       if (m.approveNewIps && m.ipRules.length === 0) return s.gateway.lockToFirstIp(m, request.ip);
@@ -431,6 +492,8 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             name: m.name,
             ...(m.lastIp ? { previousIp: m.lastIp } : {}),
             ...computerDetails(computerAt(request, m)),
+            // Expected with a changing home address: the computer is the one it's tied to.
+            ...(m.computerLock && m.lastIp ? { sameComputer: true } : {}),
           },
         });
       }

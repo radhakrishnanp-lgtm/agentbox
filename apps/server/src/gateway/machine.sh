@@ -23,6 +23,11 @@ DATA="${XDG_DATA_HOME:-$HOME/.local/share}/agentbox"
 BIN="$DATA/bin"
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/agentbox"
 PASS_FILE="$CONF/pass"
+# Prints the pass followed by this computer's ID, which it reads each time
+# (with --id, only the ID). The CLIs send that as their key.
+KEY_HELPER="$BIN/.agentbox-key"
+# Only used when the computer has no ID of its own to read.
+ID_FILE="$CONF/computer-id"
 MARK_BEGIN='# >>> agentbox machine >>>'
 MARK_END='# <<< agentbox machine <<<'
 CLIS='claude codex grok kimi gemini'
@@ -46,6 +51,51 @@ case "$AGENTBOX_URL" in
   http://127.0.0.1:* | http://localhost:*) PROTO='=http,https' ;; # local tests only
   *) die "unexpected agentbox address." ;;
 esac
+
+# This computer's own ID, read where the system keeps it: /etc/machine-id on
+# Linux, the hardware UUID on macOS. It is never stored next to the pass, so a
+# copy of the pass alone does not work on another computer that is tied to it.
+write_key_helper() {
+  mkdir -p "$BIN"
+  chmod 700 "$DATA" "$BIN"
+  tmp="$BIN/.key.tmp"
+  {
+    say '#!/bin/sh'
+    say "# Written by agentbox: prints this machine's pass and this computer's ID."
+    say "pass_file='$PASS_FILE'"
+    say 'id=""'
+    # Local tests stand in for several computers on one.
+    [ "$PROTO" != '=http,https' ] || say 'id=${AGENTBOX_TEST_COMPUTER_ID:-}'
+    say 'for f in /etc/machine-id /var/lib/dbus/machine-id; do'
+    say '  [ -z "$id" ] && [ -r "$f" ] && id=$(tr -cd "A-Za-z0-9-" <"$f")'
+    say '  [ ${#id} -ge 16 ] || id=""'
+    say 'done'
+    say 'if [ -z "$id" ] && command -v ioreg >/dev/null 2>&1; then'
+    say "  id=\$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | sed -n 's/.*\"IOPlatformUUID\" = \"\\([^\"]*\\)\".*/\\1/p' | tr -cd 'A-Za-z0-9-')"
+    say '  [ ${#id} -ge 16 ] || id=""'
+    say 'fi'
+    say "[ -n \"\$id\" ] || [ ! -r '$ID_FILE' ] || id=\$(tr -cd 'A-Za-z0-9-' <'$ID_FILE')"
+    say 'if [ "${1:-}" = --id ]; then printf "%s\n" "$id"; exit 0; fi'
+    say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
+    say 'pass=$(cat "$pass_file")'
+    say 'if [ -n "$id" ]; then printf "%s.%s\n" "$pass" "$id"; else printf "%s\n" "$pass"; fi'
+  } >"$tmp"
+  chmod 700 "$tmp"
+  mv -f "$tmp" "$KEY_HELPER"
+  # A computer with no ID of its own gets a random one, kept with the pass.
+  if [ -z "$(sh "$KEY_HELPER" --id)" ]; then
+    mkdir -p "$CONF"
+    chmod 700 "$CONF"
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$ID_FILE"
+    chmod 600 "$ID_FILE"
+  fi
+}
+
+# The key for a pass: the pass and this computer's ID.
+key_for() {
+  id=$(sh "$KEY_HELPER" --id)
+  if [ -n "$id" ]; then printf '%s.%s' "$1" "$id"; else printf '%s' "$1"; fi
+}
 
 valid_pass() {
   printf '%s' "$1" | grep -Eq '^abx_[A-Za-z0-9_-]{43}$'
@@ -79,7 +129,7 @@ computer_headers() {
 fetch_setup() {
   body=$(mktemp)
   code=$({
-    printf 'header = "Authorization: Bearer %s"\n' "$1"
+    printf 'header = "Authorization: Bearer %s"\n' "$(key_for "$1")"
     computer_headers
   } | curl -sS --proto "$PROTO" -K - -H 'Accept: text/plain' -o "$body" -w '%{http_code}' \
     "$AGENTBOX_URL/gw/_machine") || {
@@ -184,8 +234,7 @@ write_codex_token() {
     say '#!/bin/sh'
     say '# Written by agentbox: gives codex this machine'"'"'s agentbox pass.'
     say "pass_file='$PASS_FILE'"
-    say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
-    say 'cat "$pass_file"'
+    say "exec '$KEY_HELPER'"
   } >"$tmp"
   chmod 700 "$tmp"
   mv -f "$tmp" "$BIN/.agentbox-codex-token"
@@ -222,7 +271,7 @@ write_wrapper() {
       name=${pair%%=*}
       value=${pair#*=}
       if [ "$value" = '@PASS@' ]; then
-        say "$name=\$(cat \"\$pass_file\"); export $name"
+        say "$name=\$('$KEY_HELPER') || exit 1; export $name"
       else
         say "export $name='$value'"
       fi
@@ -249,7 +298,7 @@ write_opencode() {
   dir="$DATA/opencode"
   rm -rf "$dir"
   body=$(mktemp)
-  code=$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$PASS_FILE")" |
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$(key_for "$(cat "$PASS_FILE")")" |
     curl -sS --proto "$PROTO" -K - -o "$body" -w '%{http_code}' "$AGENTBOX_URL/gw/_opencode") ||
     code=000
   if [ "$code" != 200 ]; then
@@ -274,6 +323,8 @@ write_opencode() {
     say "unset $OPENCODE_UNSET"
     say "export OPENCODE_CONFIG='$dir/opencode.json'"
     say "export OPENCODE_AUTH_CONTENT='{}' OPENCODE_DISABLE_AUTOUPDATE=1"
+    # Sent as a header, so OpenCode can keep reading the pass from its file.
+    say "AGENTBOX_COMPUTER=\$('$KEY_HELPER' --id); export AGENTBOX_COMPUTER"
     say 'exec "$real" "$@"'
   } >"$tmp"
   chmod 700 "$tmp"
@@ -298,7 +349,7 @@ write_grok_login() {
     say "pass_file='$PASS_FILE'"
     say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
     say 'body=$(mktemp) || exit 1'
-    say "code=\$(printf 'header = \"Authorization: Bearer %s\"\\n' \"\$(cat \"\$pass_file\")\" |"
+    say "code=\$(printf 'header = \"Authorization: Bearer %s\"\\n' \"\$('$KEY_HELPER')\" |"
     say "  curl -sS --proto '$PROTO' -K - -o \"\$body\" -w '%{http_code}' '$url/_session') || code=000"
     say 'if [ "$code" = 200 ]; then cat "$body"; rm -f "$body"; exit 0; fi'
     say "msg=\$(sed -n 's/.*\"message\":\"\\([^\"]*\\)\".*/\\1/p' \"\$body\" | head -n 1)"
@@ -443,6 +494,7 @@ case "$cmd" in
     umask 077
     ask_pass
     valid_pass "$pass" || die "that doesn't look like an agentbox pass (it starts with abx_)."
+    write_key_helper
     fetch_setup "$pass"
     mkdir -p "$CONF"
     chmod 700 "$CONF"
@@ -467,6 +519,7 @@ case "$cmd" in
     else
       rm -f "$AGENTBOX_FRESH"
     fi
+    write_key_helper
     fetch_setup "$(cat "$PASS_FILE")"
     apply_setup
     add_path
@@ -474,6 +527,7 @@ case "$cmd" in
     ;;
   status)
     [ -r "$PASS_FILE" ] || die "this machine is not set up."
+    [ -x "$KEY_HELPER" ] || write_key_helper
     fetch_setup "$(cat "$PASS_FILE")"
     say "$SETUP" | while IFS="$TAB" read -r kind a b c d; do
       case "$kind" in

@@ -18,7 +18,7 @@ Keep your AI keys on agentbox only, and still type `claude`, `codex`, `grok`, `k
 2. **Add a machine.** Go to **Machines → Add**:
    - give it a name;
    - tick the keys it may use;
-   - keep **Lock to this computer** on, and optionally add the addresses it may use (see [Allowed addresses](#allowed-addresses));
+   - keep **Lock to its address** on, and optionally add the addresses it may use (see [Allowed addresses](#allowed-addresses)); for home internet whose address keeps changing, tick **Lock to this computer, from any address** instead (see [Lock to this computer](#lock-to-this-computer-any-address));
    - pick how long the pass works (30 days by default) and its limits.
 
    You'll see a one-line command and the machine's **pass**. The pass is shown once.
@@ -82,16 +82,30 @@ The pass stops working at once, and answers that are still streaming are cut wit
 - **Use the address it was last used from** fills in the address agentbox last saw from that computer.
 - Press **Save changes** to apply the list (it asks for your passkey or authenticator code). An address still in the fields is added too.
 
-A machine can have up to 64 addresses. With an empty list and **Lock to this computer** off, any address works.
+A machine can have up to 64 addresses. With an empty list and **Lock to its address** off, any address works.
 
-## Lock to this computer
+## Lock to its address
 
-New machines have **Lock to this computer** on. The pass then works only from the address that uses it first (normally when you run the setup command). A request from any other address is refused with "this computer's address (…) is new for this machine", and the machine shows **Blocked a request from …** in agentbox:
+New machines have **Lock to its address** on. The pass then works only from the address that uses it first (normally when you run the setup command). A request from any other address is refused with "this computer's address (…) is new for this machine", and the machine shows **Blocked a request from …** in agentbox:
 
 - **Allow this address** (after a passkey or authenticator-code check) adds it to the [allowed addresses](#allowed-addresses), for example when your laptop moves to a new network. For IPv6 the whole /64 network is allowed, because IPv6 devices change the end of their address often.
 - **Keep it blocked** just clears the notice. If you don't know the address, stop the machine.
 
 So a pass copied off the computer, even by someone with root, is useless anywhere else. On that same computer it keeps working until you stop the machine. The connection to agentbox is always HTTPS.
+
+## Lock to this computer, any address
+
+For a computer at home whose internet address keeps changing, tick **Lock to this computer, from any address** when you add or edit the machine. agentbox then ignores the address and checks the computer instead:
+
+- Every request from the setup's wrappers carries the computer's own ID after the pass: Windows' MachineGuid, `/etc/machine-id` on Linux, or the hardware UUID on a Mac. The wrappers read it each time; it is never saved next to the pass. A computer that has none gets a random ID once, kept with the pass.
+- The first computer that uses the pass is the one (normally when you run the setup command). The machine then shows **Only on <computer>, from any address**.
+- The same pass on another computer is refused with "this pass belongs to another computer", from any address, and Activity shows **Machine pass refused on another computer**.
+- Moved to a new computer? **Edit → Forget this computer → Save changes**, then run the setup there.
+- With the lock off, agentbox still remembers the first computer and writes **Machine pass used on another computer** in Activity (once a day per computer) when a different one uses the pass.
+
+Computers set up before this option existed send no ID: run `agentbox-machine refresh` on them before you turn it on, or they are refused with "run agentbox-machine refresh".
+
+How strong it is: a copy of the pass alone (from a backup, a screenshot or a synced folder) doesn't work anywhere else. Someone who can log in to that computer can read its ID too, as they can read the pass, so for them it's no harder than the address lock. Addresses are not checked while this is on. The server can't see a network card's MAC address over the internet, which is why the computer's own ID is used instead.
 
 ## Who used a pass (Activity)
 

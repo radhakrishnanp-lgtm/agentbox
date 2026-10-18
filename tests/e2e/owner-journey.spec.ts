@@ -428,6 +428,27 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
       'Hello from the fake provider',
     );
 
+    // Lock to the computer instead: its ID counts, not its address.
+    const computerLock = page.getByRole('checkbox', {
+      name: /Lock to this computer, from any address/,
+    });
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await computerLock.check();
+    await expect(page.getByText(/^Tied to .+ since /)).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Allowed addresses' })).toBeHidden();
+    await shot(page, 'machine-computer-lock');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.getByText(/Only on .+, from any address/)).toBeVisible();
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
+      'Hello from the fake provider',
+    );
+    // The bare pass (no computer ID) is refused, whatever the address.
+    expect(await fromOther()).toContain('did not say which computer it is');
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await computerLock.uncheck();
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.getByRole('button', { name: 'Save changes' })).toBeHidden();
+
     // Activity names the computer, its user and the program behind each machine event.
     await page.goto('/activity');
     const setupRow = page
