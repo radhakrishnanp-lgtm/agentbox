@@ -72,6 +72,16 @@ Each wrapper finds the real CLI further down your PATH, sets the CLI's own addre
 
 The pass stops working at once, and answers that are still streaming are cut within 2 seconds. Every CLI then stops with "agentbox: this machine was stopped in agentbox." (Grok too). Stopping a machine doesn't cancel your key at the provider. If you think a real key leaked, rotate it on the provider's website too.
 
+## Auto stop and start
+
+**Edit** a machine and tick **Auto stop and start on a schedule** to let its pass work only at certain times: pick when it starts and stops, and on which days (every day by default). The times are in the time zone of the browser you set it in, and the list shows the schedule ("auto: 09:00–22:00, every day") and **Off (schedule)** while it is off.
+
+- Outside those hours every request is refused with "agentbox: this machine is off by its schedule (works 09:00–22:00, every day, Asia/Kolkata time)…", and Activity notes "Machine used outside its schedule" (at most once an hour).
+- A stop time earlier than the start runs past midnight: 22:00–02:00 on Friday means Friday night until 2 in the morning on Saturday.
+- The **Stop** button works on top of it, as before: a machine you stopped stays stopped, even when its schedule says it is on.
+- Answers that are still streaming when the stop time comes are allowed to finish.
+- Untick the box to let the pass work at any time again.
+
 ## Allowed addresses
 
 **Edit** a machine to see the addresses its pass works from. Each one is an IP address (`203.0.113.7`, `2001:db8::1`) or a range (`198.51.100.0/24`, `2001:db8::/48`), with an optional note such as "office" or "home":

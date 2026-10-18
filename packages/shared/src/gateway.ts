@@ -245,6 +245,92 @@ export const aiKeyCreateSchema = z.object({
 });
 export type AiKeyCreate = z.infer<typeof aiKeyCreateSchema>;
 
+const timeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use a time like 09:00');
+
+function validTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * When a machine's pass works: from start to stop on the chosen days, in the
+ * owner's time zone. A stop before the start runs past midnight; the day is the
+ * day the window starts.
+ */
+export const machineScheduleSchema = z
+  .object({
+    start: timeOfDaySchema,
+    stop: timeOfDaySchema,
+    /** 0 = Sunday … 6 = Saturday. */
+    days: z
+      .array(z.number().int().min(0).max(6))
+      .min(1, 'Pick at least one day')
+      .max(7)
+      .refine((d) => new Set(d).size === d.length, 'Each day only once'),
+    tz: z.string().min(1).max(64).refine(validTimeZone, 'Unknown time zone'),
+  })
+  .refine((s) => s.start !== s.stop, { message: 'Start and stop must differ', path: ['stop'] });
+export type MachineSchedule = z.infer<typeof machineScheduleSchema>;
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+function minutesOf(hhmm: string): number {
+  const [h = '0', m = '0'] = hhmm.split(':');
+  return Number(h) * 60 + Number(m);
+}
+
+/** The weekday (0 = Sunday) and minute of the day at `now` in `tz`. */
+function localTime(now: Date, tz: string): { day: number; minute: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  const day = DAY_NAMES.indexOf(get('weekday') as (typeof DAY_NAMES)[number]);
+  return { day: Math.max(0, day), minute: Number(get('hour')) * 60 + Number(get('minute')) };
+}
+
+/** Whether the schedule lets the pass work at `now`. No schedule always does. */
+export function scheduleOpen(schedule: MachineSchedule | null, now: Date): boolean {
+  if (!schedule) return true;
+  const start = minutesOf(schedule.start);
+  const stop = minutesOf(schedule.stop);
+  const { day, minute } = localTime(now, schedule.tz);
+  const on = (d: number) => schedule.days.includes(((d % 7) + 7) % 7);
+  if (start < stop) return on(day) && minute >= start && minute < stop;
+  // Past midnight: the evening of a chosen day, or the early hours after one.
+  return (on(day) && minute >= start) || (on(day - 1) && minute < stop);
+}
+
+/** "08:00–23:00, Mon–Fri", "22:00–06:00, every day" or "09:00–17:00, Mon, Wed, Fri". */
+export function scheduleText(schedule: MachineSchedule): string {
+  const days = [...new Set(schedule.days)].sort((a, b) => a - b);
+  let when: string;
+  if (days.length === 7) when = 'every day';
+  else if (days.join() === '1,2,3,4,5') when = 'Mon–Fri';
+  else if (days.join() === '0,6') when = 'weekends';
+  else {
+    // Monday first, as people read a week.
+    const order = [...days.filter((d) => d !== 0), ...days.filter((d) => d === 0)];
+    const run =
+      order.length > 2 &&
+      order.every(
+        (d, i) => i === 0 || d === (order[i - 1] ?? 0) + 1 || (d === 0 && order[i - 1] === 6),
+      );
+    when = run
+      ? `${DAY_NAMES[order[0] ?? 0]}–${DAY_NAMES[order[order.length - 1] ?? 0]}`
+      : order.map((d) => DAY_NAMES[d]).join(', ');
+  }
+  return `${schedule.start}–${schedule.stop}, ${when}`;
+}
+
 const machineFields = {
   name: displayNameSchema(GATEWAY_LIMITS.machineNameMax),
   keyIds: z.array(z.uuid()).min(1, 'Pick at least one key').max(20),
@@ -265,6 +351,8 @@ const machineFields = {
    * internet whose address changes. Address rules are not checked while this is on.
    */
   computerLock: z.boolean(),
+  /** Auto stop and start: the pass works only in this window (null = any time). */
+  schedule: machineScheduleSchema.nullable(),
 };
 const lifetimeSchema = z.union([
   z.literal(7),
@@ -282,6 +370,7 @@ export const machineCreateSchema = z.object({
   rpm: machineFields.rpm.default(GATEWAY_LIMITS.rpmDefault),
   approveNewIps: machineFields.approveNewIps.default(true),
   computerLock: machineFields.computerLock.default(false),
+  schedule: machineFields.schedule.default(null),
   lifetimeDays: lifetimeSchema.default(GATEWAY_LIMITS.lifetimeDefaultDays),
 });
 export type MachineCreate = z.input<typeof machineCreateSchema>;
@@ -355,6 +444,10 @@ export interface MachineSummary {
   computerLock: boolean;
   /** The computer the pass is tied to, once one has used it. */
   boundComputer: { label: string; at: string } | null;
+  /** Auto stop and start, or null. */
+  schedule: MachineSchedule | null;
+  /** False while the schedule has the pass off (always true without one). */
+  scheduleOpen: boolean;
   today: { requests: number; inputTokens: number; outputTokens: number };
 }
 

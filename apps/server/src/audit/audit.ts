@@ -80,6 +80,7 @@ export type AuditAction =
   | 'machine.computer_bound'
   | 'machine.other_computer'
   | 'machine.blocked_computer'
+  | 'machine.off_schedule'
   | 'terminal.created'
   | 'terminal.renamed'
   | 'terminal.killed'
