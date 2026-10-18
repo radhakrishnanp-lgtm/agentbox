@@ -15,7 +15,9 @@ export type KeyAuthStyle =
   /** No stored key: the Grok login in the terminal vault hands out short-lived tokens. */
   | 'grok-login'
   /** No stored key: the Codex (ChatGPT) login in the terminal vault is added on the way. */
-  | 'codex-login';
+  | 'codex-login'
+  /** No stored key: OpenCode's own Zen/Go key from its login in the terminal vault. */
+  | 'opencode-login';
 
 export const KEY_AUTH_STYLES = [
   'x-api-key',
@@ -24,6 +26,7 @@ export const KEY_AUTH_STYLES = [
   'anthropic-oauth',
   'grok-login',
   'codex-login',
+  'opencode-login',
 ] as const satisfies readonly KeyAuthStyle[];
 
 /** The CLIs agentbox can wire up on a machine. */
@@ -156,6 +159,18 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     cli: 'gemini',
     slug: 'gemini',
     help: 'aistudio.google.com → Get API key.',
+  },
+  {
+    id: 'opencode-login',
+    label: 'OpenCode Zen/Go login from your Terminals (OpenCode)',
+    upstream: 'https://opencode.ai/inference',
+    auth: 'opencode-login',
+    cli: null,
+    slug: 'opencode',
+    help: 'Sign in to OpenCode once in a terminal on this server: run opencode auth login and pick OpenCode Zen (or Go). Nothing to paste here.',
+    experimental: true,
+    noSecret: true,
+    note: "OpenCode on your other computers sends every request through agentbox with the machine's pass, and agentbox adds the OpenCode Zen or Go key from your login in the vault. Only OpenCode uses it, never the other CLIs. The key never leaves this server, so Stop cuts a machine off at once. The vault must be unlocked. Not yet checked against the live OpenCode service.",
   },
   {
     id: 'openrouter',

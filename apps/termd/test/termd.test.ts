@@ -8,6 +8,7 @@ import { FrameDecoder, TERMD_FRAME, encodeFrame } from '@agentbox/shared/termd';
 import { loadTermdConfig, terminalEnv, type TermdConfig } from '../src/config.ts';
 import { Termd } from '../src/server.ts';
 import { CODEX_CLIENT_ID, CODEX_TOKEN_URL, CodexLogin, readCodexLogin } from '../src/codex.ts';
+import { OpencodeLogin, readOpencodeKey } from '../src/opencode.ts';
 import { GrokLogin, XAI_ISSUER, jwtExpiry, readGrokLogin } from '../src/grok.ts';
 import { explainMountFailure, mountPoints } from '../src/vault.ts';
 
@@ -551,5 +552,60 @@ describe('Codex (ChatGPT) login for machines', () => {
     writeFileSync(join(dir, '.codex/auth.json'), authJson(access(Date.now() - 1000)));
     await expect(login.token()).rejects.toThrow(/has expired/);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('OpenCode login for machines', () => {
+  const KEY = 'sk-zen-test-key-0000';
+
+  it('uses only a Zen or Go API key, never another sign-in', () => {
+    expect(readOpencodeKey(JSON.stringify({ opencode: { type: 'api', key: KEY } }))).toEqual({
+      key: KEY,
+      provider: 'opencode',
+    });
+    expect(
+      readOpencodeKey(
+        JSON.stringify({
+          anthropic: { type: 'oauth', access: 'a', refresh: 'r', expires: 1 },
+          'opencode-go': { type: 'api', key: KEY },
+        }),
+      ),
+    ).toEqual({ key: KEY, provider: 'opencode-go' });
+    // An OAuth entry under OpenCode's own name is not a key either.
+    expect(
+      readOpencodeKey(
+        JSON.stringify({
+          opencode: { type: 'oauth', access: KEY },
+          anthropic: { type: 'oauth', access: KEY },
+          'github-copilot': { type: 'oauth', access: KEY },
+        }),
+      ),
+    ).toEqual({ others: ['opencode', 'anthropic', 'github-copilot'] });
+    expect(readOpencodeKey('not json')).toEqual({ others: [] });
+  });
+
+  it('reads auth.json where OpenCode keeps it, and says what to do otherwise', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'termd-opencode-'));
+    const login = new OpencodeLogin(dir);
+    expect(() => login.key()).toThrow(/OpenCode is not signed in on agentbox/);
+    execFileSync('mkdir', ['-p', join(dir, '.local/share/opencode')]);
+    writeFileSync(
+      join(dir, '.local/share/opencode/auth.json'),
+      JSON.stringify({ anthropic: { type: 'oauth', access: 'x' } }),
+    );
+    expect(() => login.key()).toThrow(/signed in only with anthropic/);
+    writeFileSync(
+      join(dir, '.local/share/opencode/auth.json'),
+      JSON.stringify({ opencode: { type: 'api', key: KEY } }),
+    );
+    expect(login.key()).toEqual({ key: KEY, provider: 'opencode' });
+
+    const xdg = join(dir, 'xdg');
+    execFileSync('mkdir', ['-p', join(xdg, 'opencode')]);
+    writeFileSync(
+      join(xdg, 'opencode/auth.json'),
+      JSON.stringify({ 'opencode-go': { type: 'api', key: KEY } }),
+    );
+    expect(new OpencodeLogin(dir, { XDG_DATA_HOME: xdg }).key().provider).toBe('opencode-go');
   });
 });
