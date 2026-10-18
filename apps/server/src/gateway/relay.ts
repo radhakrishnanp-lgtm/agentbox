@@ -13,7 +13,13 @@
 import { Transform } from 'node:stream';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { request as upstreamRequest, Agent } from 'undici';
-import { normaliseComputerId, splitPass, type MachineComputer } from '@agentbox/shared';
+import {
+  normaliseComputerId,
+  scheduleOpen,
+  scheduleText,
+  splitPass,
+  type MachineComputer,
+} from '@agentbox/shared';
 import type { TermdCodexToken, TermdGrokToken } from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { DAY, MINUTE, iso } from '../lib/clock.ts';
@@ -22,7 +28,7 @@ import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
 import { opencodeConfig } from './opencode.ts';
-import { addressCheck, type AiKeyRow, type MachineRow } from './store.ts';
+import { addressCheck, machineSchedule, type AiKeyRow, type MachineRow } from './store.ts';
 import {
   TraceCollector,
   isModelCall,
@@ -338,7 +344,8 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       done(null, body);
     });
 
-    const authenticate = (
+    /** The machine for the pass, if the pass, its computer and its address are all fine. */
+    const checkPass = (
       request: FastifyRequest,
       reply: FastifyReply,
       queryKey: string | undefined,
@@ -473,6 +480,41 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
             : m.approveNewIps
               ? `this computer's address (${request.ip}) is new for this machine. Allow it in agentbox → Machines, then try again.`
               : `this machine's pass is locked to other addresses (this one is ${request.ip}).`,
+        );
+      }
+      return m;
+    };
+
+    /** checkPass, then the machine's auto stop and start. */
+    const authenticate = (
+      request: FastifyRequest,
+      reply: FastifyReply,
+      queryKey: string | undefined,
+    ): MachineRow | FastifyReply => {
+      const m = checkPass(request, reply, queryKey);
+      if (!('id' in m)) return m;
+      const schedule = machineSchedule(m);
+      const now = s.clock.now();
+      if (schedule && !scheduleOpen(schedule, new Date(now))) {
+        if (state.shouldAudit(`${m.id}:schedule`, now)) {
+          s.audit.record({
+            actor: `machine:${m.id}`,
+            action: 'machine.off_schedule',
+            targetType: 'machine',
+            targetId: m.id,
+            ip: request.ip,
+            details: {
+              name: m.name,
+              schedule: `${scheduleText(schedule)} (${schedule.tz})`,
+              ...computerDetails(computerAt(request, m)),
+            },
+          });
+        }
+        return fail(
+          reply,
+          403,
+          'permission_error',
+          `this machine is off by its schedule (works ${scheduleText(schedule)}, ${schedule.tz} time). Change it in agentbox → Machines → Edit.`,
         );
       }
       return m;

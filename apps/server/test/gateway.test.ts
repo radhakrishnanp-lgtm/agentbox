@@ -400,6 +400,81 @@ describe('machines', () => {
     expect(h.services.audit.verify().ok).toBe(true);
   });
 
+  it('refuses a pass outside its auto stop and start schedule', async () => {
+    const key = await addKey();
+    const hhmm = (offsetHours: number) => {
+      const d = new Date(h.clock.now() + offsetHours * 3_600_000);
+      return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+    };
+    const everyDay = [0, 1, 2, 3, 4, 5, 6];
+    // A window that starts in two hours: off now.
+    const later = { start: hhmm(2), stop: hhmm(3), days: everyDay, tz: 'UTC' };
+    const { pass, machine } = await addMachine([key.id], { approveNewIps: false, schedule: later });
+    expect(machine.schedule).toEqual(later);
+    expect(machine.scheduleOpen).toBe(false);
+    const call = () =>
+      gw({
+        url: '/gw/anthropic/v1/messages',
+        headers: { 'x-api-key': pass },
+        payload: messages,
+      });
+
+    const off = await call();
+    expect(off.statusCode).toBe(403);
+    expect(off.json().error.message).toBe(
+      `agentbox: this machine is off by its schedule (works ${later.start}–${later.stop}, every day, UTC time). Change it in agentbox → Machines → Edit.`,
+    );
+    expect((await call()).statusCode).toBe(403);
+
+    // A window around now: works.
+    await h.reauth(laptop);
+    const now = { start: hhmm(-1), stop: hhmm(1), days: everyDay, tz: 'UTC' };
+    const edited = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { schedule: now },
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json().scheduleOpen).toBe(true);
+    expect((await call()).statusCode).toBe(200);
+
+    // Cleared: works any time.
+    await h.reauth(laptop);
+    const cleared = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { schedule: null },
+    });
+    expect(cleared.json().schedule).toBeNull();
+    expect(cleared.json().scheduleOpen).toBe(true);
+
+    // Start and stop the same, or an unknown time zone: refused.
+    await h.reauth(laptop);
+    for (const bad of [
+      { ...now, stop: now.start },
+      { ...now, tz: 'Mars/Olympus' },
+      { ...now, days: [] },
+      { ...now, start: '24:00' },
+    ]) {
+      const res = await laptop.request({
+        method: 'PATCH',
+        url: `/api/gateway/machines/${machine.id}`,
+        payload: { schedule: bad },
+      });
+      expect(res.statusCode).toBe(400);
+    }
+
+    const rows = h.services.db.select().from(auditLog).all();
+    // Refusals are noted once an hour, not on every request.
+    expect(rows.filter((a) => a.action === 'machine.off_schedule')).toHaveLength(1);
+    const updates = rows.filter((a) => a.action === 'machine.updated');
+    expect(updates.map((a) => (JSON.parse(a.details) as { changed: string[] }).changed)).toEqual([
+      ['schedule'],
+      ['schedule'],
+    ]);
+    expect(h.services.audit.verify().ok).toBe(true);
+  });
+
   it('serves the setup script with this agentbox address and no secrets', async () => {
     const res = await h.app.inject({ method: 'GET', url: '/machine.sh' });
     expect(res.statusCode).toBe(200);

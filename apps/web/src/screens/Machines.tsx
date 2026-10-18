@@ -4,10 +4,12 @@ import {
   ipRuleSchema,
   machineCreateSchema,
   machineUpdateSchema,
+  scheduleText,
   type AiKeySummary,
   type GatewayOverview,
   type KeyCheckResult,
   type MachineCreated,
+  type MachineSchedule,
   type MachineSummary,
   type ProviderPreset,
 } from '@agentbox/shared';
@@ -210,6 +212,7 @@ function machineState(
   if (m.revokedAt) return { label: 'Stopped', tone: 'danger' };
   if (m.expiresAt && new Date(m.expiresAt).getTime() <= now)
     return { label: 'Expired', tone: 'warning' };
+  if (!m.scheduleOpen) return { label: 'Off (schedule)', tone: 'info' };
   if (!m.lastSeenAt) return { label: 'Not set up yet', tone: 'info' };
   return { label: 'Active', tone: 'success' };
 }
@@ -462,6 +465,7 @@ function MachineRow({
         <p className="text-sm text-muted">
           {addressLine(m)}
           {` · ${m.rpm} requests a minute`}
+          {m.schedule ? ` · auto: ${scheduleText(m.schedule)}` : ''}
           {m.revokedAt
             ? ` · stopped ${relativeTime(m.revokedAt)}`
             : m.expiresAt
@@ -613,6 +617,7 @@ function MachineForm(props: MachineFormProps) {
   const [approveNewIps, setApproveNewIps] = useState(machine ? machine.approveNewIps : true);
   const [computerLock, setComputerLock] = useState(machine?.computerLock ?? false);
   const [forget, setForget] = useState(false);
+  const [schedule, setSchedule] = useState<MachineSchedule | null>(machine?.schedule ?? null);
   // When editing, "keep" leaves the pass's end date as it is.
   const [lifetime, setLifetime] = useState(
     editing ? 'keep' : String(GATEWAY_LIMITS.lifetimeDefaultDays),
@@ -638,6 +643,7 @@ function MachineForm(props: MachineFormProps) {
       rpm: Number(rpm),
       approveNewIps,
       computerLock,
+      schedule,
       dailyTokenLimit: daily.trim() ? Number(daily.replace(/[,_\s]/g, '')) : null,
     };
     const days = lifetime === 'never' ? null : Number(lifetime);
@@ -716,6 +722,7 @@ function MachineForm(props: MachineFormProps) {
             </label>
           ))}
         </fieldset>
+        <ScheduleFields value={schedule} onChange={setSchedule} />
         <label className="flex items-start gap-3 text-sm">
           <input
             type="checkbox"
@@ -859,6 +866,137 @@ interface Address {
 }
 
 /** The allowed addresses being edited, plus the one typed into the add/edit fields. */
+/** Monday first, as people read a week; values are 0 = Sunday … 6 = Saturday. */
+const WEEK = [
+  { day: 1, short: 'Mon', name: 'Monday' },
+  { day: 2, short: 'Tue', name: 'Tuesday' },
+  { day: 3, short: 'Wed', name: 'Wednesday' },
+  { day: 4, short: 'Thu', name: 'Thursday' },
+  { day: 5, short: 'Fri', name: 'Friday' },
+  { day: 6, short: 'Sat', name: 'Saturday' },
+  { day: 0, short: 'Sun', name: 'Sunday' },
+] as const;
+
+/** Auto stop and start: the pass works only from "Starts at" to "Stops at" on the chosen days. */
+function ScheduleFields({
+  value,
+  onChange,
+}: {
+  value: MachineSchedule | null;
+  onChange: (s: MachineSchedule | null) => void;
+}) {
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // Kept while switched off, so ticking the box again brings the times back.
+  const [last, setLast] = useState<MachineSchedule>(
+    value ?? { start: '09:00', stop: '22:00', days: [0, 1, 2, 3, 4, 5, 6], tz: browserTz },
+  );
+  const update = (patch: Partial<MachineSchedule>) => {
+    const next = { ...last, ...patch };
+    setLast(next);
+    onChange(next);
+  };
+  return (
+    <div className="space-y-3">
+      <label className="flex items-start gap-3 text-sm">
+        <input
+          type="checkbox"
+          className="mt-0.5 size-5 shrink-0"
+          checked={value !== null}
+          onChange={(e) => {
+            onChange(e.target.checked ? last : null);
+          }}
+        />
+        <span>
+          <span className="font-medium">Auto stop and start on a schedule</span>
+          <span className="block text-muted">
+            The pass works only between the times below, on the days you pick.
+          </span>
+        </span>
+      </label>
+      {value ? (
+        <div className="space-y-3 pl-8">
+          <div className="flex flex-wrap gap-3">
+            <TimeField
+              label="Starts at"
+              value={value.start}
+              onChange={(start) => {
+                update({ start });
+              }}
+            />
+            <TimeField
+              label="Stops at"
+              value={value.stop}
+              onChange={(stop) => {
+                update({ stop });
+              }}
+            />
+          </div>
+          <div className="flex flex-wrap gap-1" role="group" aria-label="Days">
+            {WEEK.map((d) => {
+              const on = value.days.includes(d.day);
+              return (
+                <button
+                  key={d.day}
+                  type="button"
+                  aria-pressed={on}
+                  aria-label={d.name}
+                  className={cn(
+                    'min-h-10 min-w-11 rounded-md border border-border px-2 text-sm',
+                    on ? 'bg-accent text-accent-fg' : 'bg-surface text-text',
+                  )}
+                  onClick={() => {
+                    update({
+                      days: on ? value.days.filter((x) => x !== d.day) : [...value.days, d.day],
+                    });
+                  }}
+                >
+                  {d.short}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-sm text-muted">
+            {value.tz === browserTz
+              ? `In your time zone (${value.tz}).`
+              : `In ${value.tz} time, where it was set up (this browser is in ${browserTz}).`}{' '}
+            Outside these hours the pass is refused; the Stop button still works as before. A stop
+            time earlier than the start runs past midnight.
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TimeField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="space-y-1">
+      <label htmlFor={id} className="block text-sm font-medium">
+        {label}
+      </label>
+      <input
+        id={id}
+        type="time"
+        required
+        className="min-h-11 rounded-[var(--radius-input)] border border-border bg-surface px-3 text-sm"
+        value={value}
+        onChange={(e) => {
+          if (e.target.value) onChange(e.target.value);
+        }}
+      />
+    </div>
+  );
+}
+
 function useAddressList(machine: MachineSummary | undefined) {
   const [items, setItems] = useState<Address[]>(
     machine

@@ -449,6 +449,35 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     await page.getByRole('button', { name: 'Save changes' }).click();
     await expect(page.getByRole('button', { name: 'Save changes' })).toBeHidden();
 
+    // Auto stop and start: outside its hours the pass is refused.
+    const schedule = page.getByRole('checkbox', { name: /Auto stop and start on a schedule/ });
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await schedule.check();
+    // A one-minute window twelve hours away, so it is off now.
+    const away = new Date(Date.now() + 12 * 3_600_000);
+    const hhmm = (d: Date) =>
+      `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    await page.getByLabel('Starts at').fill(hhmm(away));
+    await page.getByLabel('Stops at').fill(hhmm(new Date(away.getTime() + 60_000)));
+    await page.getByRole('button', { name: 'Sunday' }).click();
+    await expect(page.getByRole('button', { name: 'Sunday' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    await page.getByRole('button', { name: 'Sunday' }).click();
+    await shot(page, 'machine-schedule');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.getByText(/auto: .+, every day/)).toBeVisible();
+    await expect(page.getByText('Off (schedule)')).toBeVisible();
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain('off by its schedule');
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await schedule.uncheck();
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.getByText('Off (schedule)')).toBeHidden();
+    expect(await machine.sh(`. "$HOME/.profile"; claude -p hi`)).toContain(
+      'Hello from the fake provider',
+    );
+
     // Activity names the computer, its user and the program behind each machine event.
     await page.goto('/activity');
     const setupRow = page

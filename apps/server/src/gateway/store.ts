@@ -14,7 +14,10 @@ import {
   PROVIDER_PRESETS,
   CONNECTED_WITHIN_MINUTES,
   USAGE_KEEP_DAYS,
+  scheduleOpen,
+  scheduleText,
   type AiKeyCreate,
+  type MachineSchedule,
   type GatewayLogs,
   type LogsPeriod,
   type AiKeySummary,
@@ -244,6 +247,8 @@ export class GatewayStore {
         m.computerHash === null
           ? null
           : { label: m.computerLabel ?? '', at: iso(m.computerAt ?? m.updatedAt) },
+      schedule: machineSchedule(m),
+      scheduleOpen: scheduleOpen(machineSchedule(m), new Date(this.#clock.now())),
       today,
     };
   }
@@ -269,6 +274,7 @@ export class GatewayStore {
       lifetimeDays: number | null;
       approveNewIps: boolean;
       computerLock?: boolean | undefined;
+      schedule?: MachineSchedule | null | undefined;
     },
     actor: string,
     ip: string,
@@ -300,6 +306,7 @@ export class GatewayStore {
       computerHash: null,
       computerLabel: null,
       computerAt: null,
+      ...scheduleColumns(input.schedule ?? null),
       createdAt: now,
       updatedAt: now,
     };
@@ -316,6 +323,7 @@ export class GatewayStore {
         ipLocked: row.ipRules.length > 0,
         approveNewIps: row.approveNewIps,
         computerLock: row.computerLock,
+        ...(input.schedule ? { schedule: scheduleText(input.schedule) } : {}),
         rpm: row.rpm,
         dailyTokenLimit: row.dailyTokenLimit,
         expiresAt: row.expiresAt === null ? null : iso(row.expiresAt),
@@ -338,6 +346,7 @@ export class GatewayStore {
       computerLock?: boolean | undefined;
       renewDays?: number | null | undefined;
       forgetComputer?: true | undefined;
+      schedule?: MachineSchedule | null | undefined;
     },
     actor: string,
     ip: string,
@@ -369,6 +378,13 @@ export class GatewayStore {
       set.computerLabel = null;
       set.computerAt = null;
     }
+    if (patch.schedule !== undefined) {
+      const cols = scheduleColumns(patch.schedule);
+      // Only written (and listed as changed) when it really changes.
+      if (JSON.stringify(cols) !== JSON.stringify(scheduleColumns(machineSchedule(m)))) {
+        Object.assign(set, cols);
+      }
+    }
     if (patch.renewDays !== undefined) {
       set.expiresAt = patch.renewDays === null ? null : now + patch.renewDays * DAY;
     }
@@ -380,9 +396,21 @@ export class GatewayStore {
       targetId: id,
       ip,
       details: {
-        changed: Object.keys(set).filter(
-          (k) => k !== 'updatedAt' && k !== 'computerLabel' && k !== 'computerAt',
-        ),
+        changed: [
+          ...new Set(
+            Object.keys(set)
+              .filter((k) => k !== 'updatedAt' && k !== 'computerLabel' && k !== 'computerAt')
+              .map((k) => (k.startsWith('schedule') ? 'schedule' : k)),
+          ),
+        ],
+        ...(set.scheduleStart !== undefined
+          ? {
+              schedule:
+                set.scheduleStart === null
+                  ? null
+                  : scheduleText(machineSchedule({ ...m, ...set }) as MachineSchedule),
+            }
+          : {}),
         ...(set.computerHash === null ? { forgotComputer: m.computerLabel ?? '' } : {}),
         ...(set.expiresAt !== undefined
           ? { expiresAt: set.expiresAt === null ? null : iso(set.expiresAt) }
@@ -933,4 +961,26 @@ export function ipAllowed(ip: string, rules: string[]): boolean {
   }
   const bare = ip.startsWith('::ffff:') && isIPv4(ip.slice(7)) ? ip.slice(7) : ip;
   return list.check(bare, isIPv6(bare) ? 'ipv6' : 'ipv4');
+}
+
+/** A machine's auto stop and start, or null. */
+export function machineSchedule(
+  m: Pick<MachineRow, 'scheduleStart' | 'scheduleStop' | 'scheduleDays' | 'scheduleTz'>,
+): MachineSchedule | null {
+  if (m.scheduleStart === null || m.scheduleStop === null || m.scheduleTz === null) return null;
+  const bits = m.scheduleDays ?? 0;
+  const days = [0, 1, 2, 3, 4, 5, 6].filter((d) => (bits & (1 << d)) !== 0);
+  return { start: m.scheduleStart, stop: m.scheduleStop, days, tz: m.scheduleTz };
+}
+
+function scheduleColumns(
+  s: MachineSchedule | null,
+): Pick<MachineRow, 'scheduleStart' | 'scheduleStop' | 'scheduleDays' | 'scheduleTz'> {
+  if (!s) return { scheduleStart: null, scheduleStop: null, scheduleDays: null, scheduleTz: null };
+  return {
+    scheduleStart: s.start,
+    scheduleStop: s.stop,
+    scheduleDays: s.days.reduce((bits, d) => bits | (1 << d), 0),
+    scheduleTz: s.tz,
+  };
 }
