@@ -151,7 +151,7 @@ Every request is logged in agentbox (which key, model, tokens and status, never 
 | Kimi Code subscription key                     | `kimi`      | **Experimental.** A key from your Kimi Code plan: see [Kimi Code subscription](#kimi-code-subscription). The model is filled in as `kimi-for-coding`.                    |
 | Moonshot API key                               | `kimi`      | Works with Kimi Code and the older kimi-cli. Needs a model name (for example `kimi-k2`) when you add the key.                                                            |
 | Moonshot API key, Claude-compatible address    | `claude`    | Runs Kimi models inside Claude Code. Needs a model name.                                                                                                                 |
-| OpenCode Zen/Go login from your Terminals      | `opencode`  | **Experimental.** Nothing to paste: see [OpenCode](#opencode). Used by OpenCode only.                                                                                    |
+| Your OpenCode setup from your Terminals        | `opencode`  | **Experimental.** Nothing to paste: see [OpenCode](#opencode). Used by OpenCode only.                                                                                    |
 | Google Gemini API key                          | `gemini`    |                                                                                                                                                                          |
 | OpenRouter, or any HTTPS API                   | none        | Point any compatible tool at the key's gateway address, with the machine's pass as its API key.                                                                          |
 
@@ -198,19 +198,34 @@ Requests go to `https://api.kimi.com/coding` and count against your Kimi Code pl
 
 [OpenCode](https://opencode.ai) talks to many providers, so it gets all of the machine's keys at once. Type `opencode` and pick a model with `/models`; the first key with a model set is the default.
 
-| Key in agentbox                    | In OpenCode                                                |
-| ---------------------------------- | ---------------------------------------------------------- |
-| Anthropic API key                  | the Anthropic provider                                     |
-| OpenAI API key                     | the OpenAI provider                                        |
-| xAI API key                        | the xAI provider                                           |
-| Google Gemini API key              | the Google provider                                        |
-| OpenRouter API key                 | the OpenRouter provider                                    |
-| Moonshot or Kimi Code key          | its own provider, named after the key; needs a model       |
-| Moonshot key used from Claude Code | its own Anthropic-style provider; needs a model            |
-| OpenCode Zen/Go login              | OpenCode's own Zen and Go providers, with all their models |
-| Claude Pro/Max, ChatGPT, SuperGrok | **not used:** those logins are allowed only in their apps  |
+| Key in agentbox                    | In OpenCode                                                                              |
+| ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| Anthropic API key                  | the Anthropic provider                                                                   |
+| OpenAI API key                     | the OpenAI provider                                                                      |
+| xAI API key                        | the xAI provider                                                                         |
+| Google Gemini API key              | the Google provider                                                                      |
+| OpenRouter API key                 | the OpenRouter provider                                                                  |
+| Moonshot or Kimi Code key          | its own provider, named after the key; needs a model                                     |
+| Moonshot key used from Claude Code | its own Anthropic-style provider; needs a model                                          |
+| Your OpenCode setup                | the providers and models you set up in OpenCode on agentbox, and Zen/Go if you signed in |
+| Other provider, with a model       | its own OpenAI-compatible provider at that address                                       |
+| (none needed)                      | OpenCode's free models, straight from opencode.ai                                        |
+| Claude Pro/Max, ChatGPT, SuperGrok | **not used:** those logins are allowed only in their apps                                |
 
-**OpenCode Zen or Go, with your OpenCode login.** Sign in once in an agentbox terminal: run `opencode auth login` and pick **OpenCode Zen** (Go uses the same key). Then in **Machines → AI keys**, add **OpenCode Zen/Go login from your Terminals** (nothing to paste) and tick it on the machine. agentbox reads only that Zen/Go key from OpenCode's `auth.json` in the vault and adds it on the way to opencode.ai; other sign-ins stored in OpenCode (Claude, ChatGPT, Copilot) are never read. The key never leaves the server, Stop cuts the machine off at once, and the vault must be unlocked. Only `opencode` uses it, never the other CLIs. Experimental: checked with OpenCode 1.19 against a stand-in provider, not yet against the live service.
+**Your OpenCode setup, from OpenCode on agentbox.** Set up OpenCode once in an agentbox terminal, the way you would on your own computer: add your own providers and models to its settings (`~/.config/opencode/opencode.json`), and if you like sign in to OpenCode Zen or Go with `opencode auth login`. Then in **Machines → AI keys**, add **Your OpenCode setup from your Terminals** (nothing to paste) and tick it on the machine. `opencode` on that computer now lists the same models, and starts with the model you chose on agentbox. Change a model on agentbox and each computer's `opencode` picks it up the next time it starts (on Windows, after `agentbox-machine refresh`). **Test** on the key lists what your computers get.
+
+The keys stay on the server: computers get each provider's name and models, never its address or key, and send their requests through agentbox with the machine's pass. agentbox adds the key from OpenCode's settings on the way, so Stop cuts a machine off at once, and the vault must be unlocked. What agentbox shares:
+
+- Providers with their own address (`options.baseURL`) on `https`, or on `http` at `localhost` or `127.0.0.1` (a model running on this server).
+- Their key written in the settings, in a file in your home folder (`{file:~/key.txt}`), or saved with `opencode auth login`. A key taken from this server's environment (`{env:…}`) can't be shared: put it in a file instead.
+- Extra headers from the provider's `options.headers`, and each model's settings, without anything that looks like a key.
+- Only an OpenCode Zen/Go key from OpenCode's logins. Other sign-ins stored in OpenCode (Claude, ChatGPT, Copilot) are never read, and only `opencode` uses any of this, never the other CLIs.
+
+A project's own `opencode.json` on agentbox isn't shared, only your settings in `~/.config/opencode`.
+
+**One more model without OpenCode on agentbox** (any OpenAI-compatible API): in **Machines → AI keys**, add **Other provider** with the provider's base URL exactly as OpenCode uses it (usually ending in `/v1`), its key and the model name. Tick it on the machine and run `agentbox-machine refresh`; it shows up in `/models`.
+
+**Free models** work on every machine without a key or login, as in OpenCode itself. They go from the computer to opencode.ai directly, not through agentbox, because no key of yours is involved; so they don't show up in Logs and Stop doesn't cut them off. With your OpenCode setup on the machine and a Zen/Go login on agentbox, all Zen models go through agentbox instead.
 
 How it's wired: the wrapper points `OPENCODE_CONFIG` at the settings agentbox wrote, ignores logins stored in OpenCode itself (`OPENCODE_AUTH_CONTENT={}`), turns auto-update off and removes provider keys such as `ANTHROPIC_API_KEY` from its environment. The settings read the pass from a file (`{file:pass}`), so the pass is in neither the settings nor the environment. Sharing is off. Your own OpenCode settings and a project's `opencode.json` still apply on top.
 

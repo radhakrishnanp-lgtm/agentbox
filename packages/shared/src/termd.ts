@@ -28,7 +28,11 @@ export type TermdRequest =
   /** The Codex (ChatGPT) login in the vault: access token and account (for machines). */
   | { op: 'codex.token' }
   /** OpenCode's own Zen/Go key from its login in the vault (for OpenCode on machines). */
-  | { op: 'opencode.key' };
+  | { op: 'opencode.key' }
+  /** The providers set up in OpenCode's own settings in the vault, without their keys. */
+  | { op: 'opencode.setup' }
+  /** Where one of those providers lives and its key (for the gateway only). */
+  | { op: 'opencode.provider'; id: string };
 
 export interface TermdGrokToken {
   token: string;
@@ -52,6 +56,33 @@ export interface TermdOpencodeKey {
   key: string;
   /** Which of OpenCode's logins it came from: Zen or Go. */
   provider: 'opencode' | 'opencode-go';
+}
+
+/** A provider you set up in OpenCode on agentbox, as machines' OpenCode gets it. */
+export interface TermdOpencodeProvider {
+  id: string;
+  name: string;
+  /** The AI SDK package OpenCode uses for it, e.g. @ai-sdk/openai-compatible. */
+  npm: string | null;
+  /** OpenCode's model settings, by model id, with anything secret left out. */
+  models: Record<string, unknown>;
+}
+
+export interface TermdOpencodeSetup {
+  /** Which Zen/Go login OpenCode has, if any. */
+  zen: 'opencode' | 'opencode-go' | null;
+  providers: TermdOpencodeProvider[];
+  /** OpenCode's chosen model on agentbox, when machines have it too. */
+  model: string | null;
+  /** Providers in OpenCode's settings that machines can't get: they have no address (baseURL) of their own, or it isn't https. */
+  skipped: string[];
+}
+
+export interface TermdOpencodeUpstream {
+  baseURL: string;
+  /** Null for a provider that needs no key (e.g. a model running on this server). */
+  key: string | null;
+  headers: Record<string, string>;
 }
 
 export interface TermdOverview {

@@ -205,7 +205,14 @@ describe('machine setup script', () => {
       enabled_providers: string[];
       model: string;
     };
-    expect(oc.enabled_providers).toEqual(['anthropic', 'openai', 'xai', 'agentbox-kimi', 'google']);
+    expect(oc.enabled_providers).toEqual([
+      'anthropic',
+      'openai',
+      'xai',
+      'agentbox-kimi',
+      'google',
+      'opencode',
+    ]);
     expect(oc.model).toBe('openai/gpt-5.1-codex');
     // agentbox's own address, which is where the setup script comes from in real use.
     const origin = h.services.config.origin;
@@ -402,9 +409,9 @@ describe('machine setup script', () => {
     const oc = JSON.parse(
       readFileSync(join(pc.home, '.local/share/agentbox/opencode/opencode.json'), 'utf8'),
     ) as { enabled_providers: string[] };
-    expect(oc.enabled_providers).toEqual(['openrouter']);
+    expect(oc.enabled_providers).toEqual(['openrouter', 'opencode']);
 
-    // Without the OpenRouter key, nothing is left for OpenCode either.
+    // Without the OpenRouter key, OpenCode keeps only its own free models.
     await h.reauth(laptop);
     const machineId = created.json<MachineCreated>().machine.id;
     const patched = await laptop.request({
@@ -413,9 +420,32 @@ describe('machine setup script', () => {
       payload: { keyIds: [kimi.id] },
     });
     expect(patched.statusCode, patched.body).toBe(200);
+    // opencode itself picks up the change the next time it starts.
+    const ocFile = join(pc.home, '.local/share/agentbox/opencode/opencode.json');
+    await pc.sh('opencode run hi');
+    expect(pc.seen('opencode').args).toEqual(['run', 'hi']);
+    expect(JSON.parse(readFileSync(ocFile, 'utf8'))).toMatchObject({
+      enabled_providers: ['opencode'],
+    });
+    expect(statSync(ocFile).mode & 0o777).toBe(0o600);
     const again = await pc.sh(`sh '${script}' refresh`, { AGENTBOX_FRESH: join(dir, 'gone') });
-    expect(again).toContain('No AI tools are allowed for this machine yet');
-    expect(existsSync(join(pc.bin, 'opencode'))).toBe(false);
-    expect(existsSync(join(pc.home, '.local/share/agentbox/opencode'))).toBe(false);
+    expect(again).toContain('opencode: ready');
+    expect(existsSync(join(pc.bin, 'opencode'))).toBe(true);
+    const free = JSON.parse(
+      readFileSync(join(pc.home, '.local/share/agentbox/opencode/opencode.json'), 'utf8'),
+    ) as { provider: object; enabled_providers: string[] };
+    expect(free).toMatchObject({ provider: {}, enabled_providers: ['opencode'] });
+
+    // agentbox out of reach: the settings it had stay, and opencode still starts.
+    await h.app.close();
+    await pc.sh('opencode run again');
+    expect(pc.seen('opencode').args).toEqual(['run', 'again']);
+    expect(JSON.parse(readFileSync(ocFile, 'utf8'))).toMatchObject({
+      enabled_providers: ['opencode'],
+    });
+    expect(readdirSync(join(pc.home, '.local/share/agentbox/opencode'))).toEqual([
+      'opencode.json',
+      'pass',
+    ]);
   });
 });

@@ -218,7 +218,7 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
         provider: Record<string, { options: { apiKey: string } }>;
         enabled_providers: string[];
       };
-      expect(oc.enabled_providers).toEqual(['anthropic', 'openai']);
+      expect(oc.enabled_providers).toEqual(['anthropic', 'openai', 'opencode']);
       expect(oc.provider.openai?.options.apiKey).toBe('{file:../pass}');
       const ocCmd = readFileSync(join(pc.bin, 'opencode.cmd'), 'utf8');
       expect(ocCmd).not.toContain(pass);
