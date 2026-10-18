@@ -3,7 +3,7 @@
  * Secrets are never stored in plain text: tokens are stored as SHA-256 hashes,
  * recovery codes and the sign-in password as scrypt hashes, and the TOTP seed AES-256-GCM encrypted.
  */
-import type { MachineComputer } from '@agentbox/shared';
+import type { MachineComputer, ModelSettings } from '@agentbox/shared';
 import { sql } from 'drizzle-orm';
 import {
   blob,
@@ -252,6 +252,8 @@ export const aiKey = sqliteTable(
     cli: text('cli', { enum: ['claude', 'codex', 'grok', 'kimi', 'gemini'] }),
     /** Model the machine's CLI uses by default (needed when the provider isn't the CLI's own). */
     model: text('model'),
+    /** How OpenCode treats the model (context window, images, reasoning, temperature). */
+    modelSettings: text('model_settings', { mode: 'json' }).$type<ModelSettings>(),
     secretEnc: text('secret_enc').notNull(),
     hint: text('hint').notNull(),
     lastUsedAt: integer('last_used_at'),

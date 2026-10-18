@@ -12,6 +12,7 @@
  * their models, and their requests go through the gateway, which adds the key.
  */
 import type { TermdOpencodeSetup } from '@agentbox/shared/termd';
+import type { ModelSettings } from '@agentbox/shared';
 import type { AiKeyRow } from './store.ts';
 
 /** OpenCode replaces this with the pass file's contents. The setup script puts the file there. */
@@ -20,7 +21,12 @@ export const OPENCODE_PASS = '{file:pass}';
 interface Provider {
   name?: string;
   npm?: string;
-  options: { baseURL: string; apiKey: string; headers: Record<string, string> };
+  options: {
+    baseURL: string;
+    apiKey: string;
+    headers: Record<string, string>;
+    includeUsage?: boolean;
+  };
   models?: Record<string, unknown>;
 }
 
@@ -46,6 +52,8 @@ const ROUTES: Record<
   moonshot: { npm: '@ai-sdk/openai-compatible', path: '/v1', needsModel: true },
   'kimi-code': { npm: '@ai-sdk/openai-compatible', path: '/v1', needsModel: true },
   'moonshot-anthropic': { npm: '@ai-sdk/anthropic', path: '/v1', needsModel: true },
+  // Any OpenAI-compatible API, with the model settings you gave it.
+  'openai-compatible': { npm: '@ai-sdk/openai-compatible', path: '', needsModel: true },
   // "Other provider": any OpenAI-compatible API. Its address is used as the
   // base URL as typed (usually ending in /v1), so the model must be named.
   custom: { npm: '@ai-sdk/openai-compatible', path: '', needsModel: true },
@@ -69,6 +77,37 @@ const OPENCODE_SERVICES = [
   { id: 'opencode', path: '/v1' },
   { id: 'opencode-go', path: '/go/v1' },
 ] as const;
+
+/** A model as OpenCode describes it, from the settings on its key. */
+export function opencodeModel(
+  model: string,
+  settings: ModelSettings | null,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { name: model };
+  if (!settings) return out;
+  const options: Record<string, unknown> = {};
+  if (settings.context !== undefined || settings.output !== undefined) {
+    // OpenCode wants both; these are its usual values.
+    out['limit'] = { context: settings.context ?? 128_000, output: settings.output ?? 8192 };
+  }
+  if (settings.images !== undefined) {
+    out['attachment'] = settings.images;
+    out['modalities'] = {
+      input: settings.images ? ['text', 'image'] : ['text'],
+      output: ['text'],
+    };
+  }
+  if (settings.reasoning) {
+    out['reasoning'] = true;
+    options['reasoningEffort'] = settings.reasoning;
+  }
+  if (settings.temperature !== undefined) {
+    out['temperature'] = true;
+    options['temperature'] = settings.temperature;
+  }
+  if (Object.keys(options).length) out['options'] = options;
+  return out;
+}
 
 /** Where a provider set up in OpenCode on agentbox is, under the key's gateway address. */
 export const OPENCODE_PROVIDER_PATH = '/p/';
@@ -111,6 +150,7 @@ export function opencodeConfig(
             baseURL: `${gatewayUrl(k.slug)}${OPENCODE_PROVIDER_PATH}${p.id}`,
             apiKey: OPENCODE_PASS,
             headers,
+            ...(p.npm === '@ai-sdk/openai-compatible' ? { includeUsage: true } : {}),
           },
           models: p.models,
         };
@@ -132,8 +172,10 @@ export function opencodeConfig(
         apiKey: OPENCODE_PASS,
         // The wrapper reads this computer's ID each time OpenCode starts.
         headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+        // Token counts in the answer, for Logs, limits and Agent tracker.
+        ...(route.npm === '@ai-sdk/openai-compatible' ? { includeUsage: true } : {}),
       },
-      ...(k.model ? { models: { [k.model]: { name: k.model } } } : {}),
+      ...(k.model ? { models: { [k.model]: opencodeModel(k.model, k.modelSettings) } } : {}),
     };
     if (model === undefined && k.model) model = `${id}/${k.model}`;
   }

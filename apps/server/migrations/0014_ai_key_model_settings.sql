@@ -1,0 +1,1 @@
+ALTER TABLE `ai_key` ADD `model_settings` text;

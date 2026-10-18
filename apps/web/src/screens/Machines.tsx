@@ -5,6 +5,7 @@ import {
   machineCreateSchema,
   machineUpdateSchema,
   presetKeyName,
+  REASONING_EFFORTS,
   scheduleText,
   type AiKeySummary,
   type GatewayOverview,
@@ -1433,6 +1434,7 @@ function AddKey({
   const [upstream, setUpstream] = useState(first?.upstream ?? '');
   const [secret, setSecret] = useState('');
   const [model, setModel] = useState(first?.defaultModel ?? '');
+  const [settings, setSettings] = useState<ModelSettingsForm>(NO_MODEL_SETTINGS);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1444,7 +1446,10 @@ function AddKey({
     setSlug(freeSlug(p.slug));
     setUpstream(p.upstream);
     setModel(p.defaultModel ?? '');
+    setSettings(NO_MODEL_SETTINGS);
   };
+  // The model is asked for when a CLI or OpenCode uses it.
+  const asksModel = !!preset && (!!preset.cli || !!preset.needsModel || preset.id === 'custom');
 
   const submit = (e: SyntheticEvent) => {
     e.preventDefault();
@@ -1455,10 +1460,13 @@ function AddKey({
       secret: preset?.noSecret ? '' : secret,
       upstream,
       model,
+      ...(preset?.modelSettings ? { modelSettings: modelSettingsOf(settings) } : {}),
     });
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
-      setError(issue ? `${String(issue.path[0] ?? 'form')}: ${issue.message}` : 'Check the form');
+      setError(
+        issue ? `${String(issue.path.at(-1) ?? 'form')}: ${issue.message}` : 'Check the form',
+      );
       return;
     }
     setBusy(true);
@@ -1523,13 +1531,34 @@ function AddKey({
             }}
           />
         </div>
-        {preset?.cli ? (
+        {preset?.noSecret ? null : (
+          <Field
+            label={preset?.modelSettings ? 'Base URL' : 'Provider address'}
+            placeholder={preset?.modelSettings ? 'https://api.example.com/v1' : undefined}
+            hint={
+              preset?.modelSettings
+                ? '/chat/completions is added on its own, so give only the base URL, usually ending in /v1.'
+                : preset?.id === 'custom'
+                  ? 'The API base address, starting with https://'
+                  : 'Only change this if your provider told you to use a different address.'
+            }
+            value={upstream}
+            onChange={(e) => {
+              setUpstream(e.target.value);
+            }}
+          />
+        )}
+        {preset && asksModel ? (
           <Field
             label={preset.needsModel ? 'Model' : 'Model (optional)'}
             placeholder={
-              preset.needsModel
-                ? 'Model name from the provider’s docs'
-                : 'Leave empty to use the CLI’s default'
+              preset.modelSettings
+                ? 'The model ID, e.g. glm-5.3-flash'
+                : preset.needsModel
+                  ? 'Model name from the provider’s docs'
+                  : preset.cli
+                    ? 'Leave empty to use the CLI’s default'
+                    : 'Needed for OpenCode'
             }
             spellCheck={false}
             value={model}
@@ -1538,23 +1567,17 @@ function AddKey({
             }}
           />
         ) : null}
-        {preset?.noSecret ? null : (
-          <Field
-            label="Provider address"
-            hint={
-              preset?.id === 'custom'
-                ? 'The API base address, starting with https://'
-                : 'Only change this if your provider told you to use a different address.'
-            }
-            value={upstream}
-            onChange={(e) => {
-              setUpstream(e.target.value);
-            }}
-          />
-        )}
+        {preset?.modelSettings ? (
+          <ModelSettingsFields value={settings} onChange={setSettings} />
+        ) : null}
         {preset && preset.cli ? (
           <p className="text-sm text-muted">
             Machines get a {CLI_LABEL[preset.cli]} command that uses this key.
+          </p>
+        ) : preset?.modelSettings ? (
+          <p className="text-sm text-muted">
+            Machines get it in opencode as a model of its own. Agent tracker records it like any
+            other model. The other CLIs never use it.
           </p>
         ) : preset?.id === 'opencode-login' ? (
           <p className="text-sm text-muted">
@@ -1582,6 +1605,113 @@ function AddKey({
         </div>
       </form>
     </CardBody>
+  );
+}
+
+interface ModelSettingsForm {
+  context: string;
+  output: string;
+  images: boolean;
+  reasoning: '' | (typeof REASONING_EFFORTS)[number];
+  temperature: string;
+}
+
+const NO_MODEL_SETTINGS: ModelSettingsForm = {
+  context: '128000',
+  output: '',
+  images: false,
+  reasoning: '',
+  temperature: '',
+};
+
+/** The form's text boxes as numbers; empty boxes are left out. */
+function modelSettingsOf(f: ModelSettingsForm) {
+  const num = (v: string) => (v.trim() === '' ? undefined : Number(v));
+  return {
+    context: num(f.context),
+    output: num(f.output),
+    images: f.images,
+    reasoning: f.reasoning || undefined,
+    temperature: num(f.temperature),
+  };
+}
+
+function ModelSettingsFields({
+  value,
+  onChange,
+}: {
+  value: ModelSettingsForm;
+  onChange: (v: ModelSettingsForm) => void;
+}) {
+  const set = (patch: Partial<ModelSettingsForm>) => {
+    onChange({ ...value, ...patch });
+  };
+  return (
+    <fieldset className="space-y-4">
+      <legend className="mb-2 text-sm font-medium">Model settings for OpenCode</legend>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field
+          label="Context window"
+          inputMode="numeric"
+          hint="In tokens"
+          value={value.context}
+          onChange={(e) => {
+            set({ context: e.target.value });
+          }}
+        />
+        <Field
+          label="Longest answer (optional)"
+          inputMode="numeric"
+          placeholder="8192"
+          hint="In tokens"
+          value={value.output}
+          onChange={(e) => {
+            set({ output: e.target.value });
+          }}
+        />
+        <Field
+          label="Temperature (optional)"
+          inputMode="decimal"
+          placeholder="0 to 2"
+          value={value.temperature}
+          onChange={(e) => {
+            set({ temperature: e.target.value });
+          }}
+        />
+      </div>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Select
+          label="Reasoning effort"
+          value={value.reasoning}
+          onChange={(v) => {
+            set({ reasoning: v as ModelSettingsForm['reasoning'] });
+          }}
+          hint="How much the model thinks before answering"
+        >
+          <option value="">Off (the model's default)</option>
+          {REASONING_EFFORTS.map((r) => (
+            <option key={r} value={r}>
+              {r[0]?.toUpperCase()}
+              {r.slice(1)}
+            </option>
+          ))}
+        </Select>
+        <label className="flex items-start gap-3 self-center text-sm sm:col-span-2">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-5 shrink-0"
+            checked={value.images}
+            onChange={(e) => {
+              set({ images: e.target.checked });
+            }}
+          />
+          <span>
+            <span className="font-medium">Supports images</span>
+            <span className="block text-muted">OpenCode can send it pictures and screenshots.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
   );
 }
 
