@@ -93,6 +93,8 @@ export const TERMINAL_LIMITS = {
   unackedHighBytes: 128 * 1024,
   unackedLowBytes: 32 * 1024,
   maxTerminals: 20,
+  /** "Copy all text" takes the screen and this many lines of history before it. */
+  captureLines: 3000,
 } as const;
 
 /** Browser → server control messages (text frames). Keystrokes go as binary frames. */

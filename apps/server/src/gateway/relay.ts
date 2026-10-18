@@ -13,8 +13,14 @@
 import { Transform } from 'node:stream';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { request as upstreamRequest, Agent } from 'undici';
-import { normaliseComputerId, splitPass, type MachineComputer } from '@agentbox/shared';
-import type { TermdCodexToken, TermdGrokToken } from '@agentbox/shared/termd';
+import {
+  normaliseComputerId,
+  scheduleOpen,
+  scheduleText,
+  splitPass,
+  type MachineComputer,
+} from '@agentbox/shared';
+import type { TermdCodexToken, TermdGrokToken, TermdOpencodeKey } from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { DAY, MINUTE, iso } from '../lib/clock.ts';
 import { sha256Hex } from '../lib/crypto.ts';
@@ -22,7 +28,7 @@ import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
 import { opencodeConfig } from './opencode.ts';
-import { addressCheck, type AiKeyRow, type MachineRow } from './store.ts';
+import { addressCheck, machineSchedule, type AiKeyRow, type MachineRow } from './store.ts';
 import {
   TraceCollector,
   isModelCall,
@@ -228,6 +234,12 @@ export function upstreamHeaders(
       out['authorization'] = `Bearer ${secret}`;
       if (accountId) out['chatgpt-account-id'] = accountId;
       break;
+    case 'opencode-login':
+      // OpenCode sends its key as x-api-key to Claude models and as a bearer
+      // token to the rest: answer in kind.
+      if (incoming['x-api-key'] !== undefined) out['x-api-key'] = secret;
+      else out['authorization'] = `Bearer ${secret}`;
+      break;
     case 'anthropic-oauth': {
       out['authorization'] = `Bearer ${secret}`;
       const betas = (out['anthropic-beta'] ?? '')
@@ -338,7 +350,8 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       done(null, body);
     });
 
-    const authenticate = (
+    /** The machine for the pass, if the pass, its computer and its address are all fine. */
+    const checkPass = (
       request: FastifyRequest,
       reply: FastifyReply,
       queryKey: string | undefined,
@@ -478,6 +491,41 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       return m;
     };
 
+    /** checkPass, then the machine's auto stop and start. */
+    const authenticate = (
+      request: FastifyRequest,
+      reply: FastifyReply,
+      queryKey: string | undefined,
+    ): MachineRow | FastifyReply => {
+      const m = checkPass(request, reply, queryKey);
+      if (!('id' in m)) return m;
+      const schedule = machineSchedule(m);
+      const now = s.clock.now();
+      if (schedule && !scheduleOpen(schedule, new Date(now))) {
+        if (state.shouldAudit(`${m.id}:schedule`, now)) {
+          s.audit.record({
+            actor: `machine:${m.id}`,
+            action: 'machine.off_schedule',
+            targetType: 'machine',
+            targetId: m.id,
+            ip: request.ip,
+            details: {
+              name: m.name,
+              schedule: `${scheduleText(schedule)} (${schedule.tz})`,
+              ...computerDetails(computerAt(request, m)),
+            },
+          });
+        }
+        return fail(
+          reply,
+          403,
+          'permission_error',
+          `this machine is off by its schedule (works ${scheduleText(schedule)}, ${schedule.tz} time). Change it in agentbox → Machines → Edit.`,
+        );
+      }
+      return m;
+    };
+
     /** Records use, and writes a security event the first time and whenever the address changes. */
     const seen = (m: MachineRow, request: FastifyRequest) => {
       const ip = request.ip;
@@ -564,6 +612,25 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
               : 'could not get the ChatGPT login.';
         const status = err instanceof TermdRefused && err.code !== 'internal' ? 403 : 503;
         // 403, not 401, so codex shows the message instead of retrying.
+        return fail(reply, status, 'api_error', message);
+      }
+    };
+
+    /** OpenCode's Zen/Go key from its login in the vault, or a reply explaining why there is none. */
+    const vaultOpencodeKey = async (reply: FastifyReply): Promise<string | FastifyReply> => {
+      try {
+        return (await s.terminals.client.request<TermdOpencodeKey>({ op: 'opencode.key' })).key;
+      } catch (err) {
+        const message =
+          err instanceof TermdRefused
+            ? err.code === 'vault_locked'
+              ? 'the vault on agentbox is locked. Unlock it in agentbox → Terminals.'
+              : err.message
+            : err instanceof AppError
+              ? err.message
+              : 'could not get the OpenCode login.';
+        const status = err instanceof TermdRefused && err.code !== 'internal' ? 403 : 503;
+        // 403, not 401, so OpenCode shows the message instead of retrying.
         return fail(reply, status, 'api_error', message);
       }
     };
@@ -778,6 +845,13 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           // The machine's codex uses <gateway>/v1 like any OpenAI-style provider;
           // ChatGPT's Codex backend has no /v1 (…/backend-api/codex/responses).
           if (upstreamPath.startsWith('/v1/')) upstreamPath = upstreamPath.slice(3);
+        } else if (key.auth === 'opencode-login') {
+          const found = await vaultOpencodeKey(reply);
+          if (typeof found !== 'string') {
+            logRefused(reply.statusCode);
+            return found;
+          }
+          secret = found;
         } else {
           secret = s.gateway.revealSecret(key);
         }

@@ -72,6 +72,16 @@ Each wrapper finds the real CLI further down your PATH, sets the CLI's own addre
 
 The pass stops working at once, and answers that are still streaming are cut within 2 seconds. Every CLI then stops with "agentbox: this machine was stopped in agentbox." (Grok too). Stopping a machine doesn't cancel your key at the provider. If you think a real key leaked, rotate it on the provider's website too.
 
+## Auto stop and start
+
+**Edit** a machine and tick **Auto stop and start on a schedule** to let its pass work only at certain times: pick when it starts and stops, and on which days (every day by default). The times are in the time zone of the browser you set it in, and the list shows the schedule ("auto: 09:00–22:00, every day") and **Off (schedule)** while it is off.
+
+- Outside those hours every request is refused with "agentbox: this machine is off by its schedule (works 09:00–22:00, every day, Asia/Kolkata time)…", and Activity notes "Machine used outside its schedule" (at most once an hour).
+- A stop time earlier than the start runs past midnight: 22:00–02:00 on Friday means Friday night until 2 in the morning on Saturday.
+- The **Stop** button works on top of it, as before: a machine you stopped stays stopped, even when its schedule says it is on.
+- Answers that are still streaming when the stop time comes are allowed to finish.
+- Untick the box to let the pass work at any time again.
+
 ## Allowed addresses
 
 **Edit** a machine to see the addresses its pass works from. Each one is an IP address (`203.0.113.7`, `2001:db8::1`) or a range (`198.51.100.0/24`, `2001:db8::/48`), with an optional note such as "office" or "home":
@@ -141,6 +151,7 @@ Every request is logged in agentbox (which key, model, tokens and status, never 
 | Kimi Code subscription key                     | `kimi`      | **Experimental.** A key from your Kimi Code plan: see [Kimi Code subscription](#kimi-code-subscription). The model is filled in as `kimi-for-coding`.                    |
 | Moonshot API key                               | `kimi`      | Works with Kimi Code and the older kimi-cli. Needs a model name (for example `kimi-k2`) when you add the key.                                                            |
 | Moonshot API key, Claude-compatible address    | `claude`    | Runs Kimi models inside Claude Code. Needs a model name.                                                                                                                 |
+| OpenCode Zen/Go login from your Terminals      | `opencode`  | **Experimental.** Nothing to paste: see [OpenCode](#opencode). Used by OpenCode only.                                                                                    |
 | Google Gemini API key                          | `gemini`    |                                                                                                                                                                          |
 | OpenRouter, or any HTTPS API                   | none        | Point any compatible tool at the key's gateway address, with the machine's pass as its API key.                                                                          |
 
@@ -187,16 +198,19 @@ Requests go to `https://api.kimi.com/coding` and count against your Kimi Code pl
 
 [OpenCode](https://opencode.ai) talks to many providers, so it gets all of the machine's keys at once. Type `opencode` and pick a model with `/models`; the first key with a model set is the default.
 
-| Key in agentbox                    | In OpenCode                                               |
-| ---------------------------------- | --------------------------------------------------------- |
-| Anthropic API key                  | the Anthropic provider                                    |
-| OpenAI API key                     | the OpenAI provider                                       |
-| xAI API key                        | the xAI provider                                          |
-| Google Gemini API key              | the Google provider                                       |
-| OpenRouter API key                 | the OpenRouter provider                                   |
-| Moonshot or Kimi Code key          | its own provider, named after the key; needs a model      |
-| Moonshot key used from Claude Code | its own Anthropic-style provider; needs a model           |
-| Claude Pro/Max, ChatGPT, SuperGrok | **not used:** those logins are allowed only in their apps |
+| Key in agentbox                    | In OpenCode                                                |
+| ---------------------------------- | ---------------------------------------------------------- |
+| Anthropic API key                  | the Anthropic provider                                     |
+| OpenAI API key                     | the OpenAI provider                                        |
+| xAI API key                        | the xAI provider                                           |
+| Google Gemini API key              | the Google provider                                        |
+| OpenRouter API key                 | the OpenRouter provider                                    |
+| Moonshot or Kimi Code key          | its own provider, named after the key; needs a model       |
+| Moonshot key used from Claude Code | its own Anthropic-style provider; needs a model            |
+| OpenCode Zen/Go login              | OpenCode's own Zen and Go providers, with all their models |
+| Claude Pro/Max, ChatGPT, SuperGrok | **not used:** those logins are allowed only in their apps  |
+
+**OpenCode Zen or Go, with your OpenCode login.** Sign in once in an agentbox terminal: run `opencode auth login` and pick **OpenCode Zen** (Go uses the same key). Then in **Machines → AI keys**, add **OpenCode Zen/Go login from your Terminals** (nothing to paste) and tick it on the machine. agentbox reads only that Zen/Go key from OpenCode's `auth.json` in the vault and adds it on the way to opencode.ai; other sign-ins stored in OpenCode (Claude, ChatGPT, Copilot) are never read. The key never leaves the server, Stop cuts the machine off at once, and the vault must be unlocked. Only `opencode` uses it, never the other CLIs. Experimental: checked with OpenCode 1.19 against a stand-in provider, not yet against the live service.
 
 How it's wired: the wrapper points `OPENCODE_CONFIG` at the settings agentbox wrote, ignores logins stored in OpenCode itself (`OPENCODE_AUTH_CONTENT={}`), turns auto-update off and removes provider keys such as `ANTHROPIC_API_KEY` from its environment. The settings read the pass from a file (`{file:pass}`), so the pass is in neither the settings nor the environment. Sharing is off. Your own OpenCode settings and a project's `opencode.json` still apply on top.
 

@@ -28,6 +28,7 @@ Then add each subscription once.
 | **Claude Pro/Max**       | `claude setup-token`, sign in, copy the token (starts with `sk-ant-oat`)                                                   | **Claude Pro/Max subscription token**, paste the token             |
 | **SuperGrok**            | `grok`, sign in with your SuperGrok account                                                                                | **SuperGrok login from your Terminals**, nothing to paste          |
 | **ChatGPT (Codex)**      | `npm install -g @openai/codex` (first time only), then `codex login --device-auth`, open the link and sign in with ChatGPT | **ChatGPT login from your Terminals (Codex)**, nothing to paste    |
+| **OpenCode Zen or Go**   | `opencode auth login`, pick **OpenCode Zen** and paste the key from opencode.ai (used by `opencode` only)                  | **OpenCode Zen/Go login from your Terminals**, nothing to paste    |
 | **Kimi Code (Moderato)** | nothing: in the browser open the Kimi Code console (kimi.com/code) → **API keys** → create a key                           | **Kimi Code subscription key**, paste it (model `kimi-for-coding`) |
 | API keys (pay as you go) | nothing                                                                                                                    | the matching **… API key** choice, paste the key                   |
 
@@ -94,6 +95,7 @@ There's nothing to sign in to there; agentbox handles it. On Windows, PowerShell
 | Let it work again                              | **Machines → Start** (asks for your passkey or authenticator code). The same pass works again; nothing to do there |
 | Change its keys, addresses, limits or end date | **Machines → Edit**, then run `agentbox-machine refresh` on that computer                                          |
 | Remove it for good                             | **Machines → Delete**, then `agentbox-machine uninstall` on that computer                                          |
+| Only let it work at certain hours              | **Machines → Edit**, tick **Auto stop and start on a schedule**, set the times and days, **Save changes**          |
 | Its home address keeps changing                | **Machines → Edit**, tick **Lock to this computer, from any address**, **Save changes**                            |
 | Moved the pass to a new computer               | **Machines → Edit → Forget this computer**, save, then run the setup command on the new computer                   |
 | Turn one address off for now                   | **Machines → Edit**, flip the switch next to that address, **Save changes**. Flip it back to let it in again       |
@@ -160,6 +162,7 @@ Prompts and answers can hold secrets you pasted into a CLI. Turn the tracker on 
 | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | "the vault on agentbox is locked"                                      | Unlock the vault in **Terminals**                                                                                                         |
 | "this machine was stopped in agentbox"                                 | Press **Start** on that machine, if you meant it to work                                                                                  |
+| "this machine is off by its schedule"                                  | It is outside the hours set in **Machines → Edit**: change or untick **Auto stop and start on a schedule**                                |
 | "this computer's address (…) is new"                                   | Press **Allow this address** on the machine in agentbox                                                                                   |
 | "… run agentbox-machine refresh"                                       | Run `agentbox-machine refresh` on that computer                                                                                           |
 | Codex: "not signed in with ChatGPT" or "expired"                       | In an agentbox terminal run `codex login --device-auth` again                                                                             |

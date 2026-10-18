@@ -92,6 +92,13 @@
       "when": 1792300693945,
       "tag": "0012_machine_computer_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1792312217974,
+      "tag": "0013_machine_schedule",
+      "breakpoints": true
     }
   ]
 }

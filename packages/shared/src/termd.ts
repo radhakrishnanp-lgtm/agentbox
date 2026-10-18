@@ -14,6 +14,8 @@ export type TermdRequest =
   | { op: 'create'; name: string; preset: TerminalPresetId; cols: number; rows: number }
   | { op: 'rename'; name: string; to: string }
   | { op: 'kill'; name: string }
+  /** The session's text: the screen and its recent history, for copying. */
+  | { op: 'capture'; name: string }
   | { op: 'attach'; name: string; cols: number; rows: number }
   | { op: 'vault.init'; password: string }
   | { op: 'vault.unlock'; password: string }
@@ -24,7 +26,9 @@ export type TermdRequest =
   /** A short-lived access token from the Grok login in the vault (for machines). */
   | { op: 'grok.token' }
   /** The Codex (ChatGPT) login in the vault: access token and account (for machines). */
-  | { op: 'codex.token' };
+  | { op: 'codex.token' }
+  /** OpenCode's own Zen/Go key from its login in the vault (for OpenCode on machines). */
+  | { op: 'opencode.key' };
 
 export interface TermdGrokToken {
   token: string;
@@ -38,6 +42,16 @@ export interface TermdCodexToken {
   accountId: string;
   /** Epoch milliseconds. */
   expiresAt: number;
+}
+
+export interface TermdCapture {
+  text: string;
+}
+
+export interface TermdOpencodeKey {
+  key: string;
+  /** Which of OpenCode's logins it came from: Zen or Go. */
+  provider: 'opencode' | 'opencode-go';
 }
 
 export interface TermdOverview {

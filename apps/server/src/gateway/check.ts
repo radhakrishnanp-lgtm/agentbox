@@ -6,7 +6,7 @@
  */
 import { request as upstreamRequest } from 'undici';
 import type { KeyCheckResult } from '@agentbox/shared';
-import type { TermdCodexToken, TermdGrokToken } from '@agentbox/shared/termd';
+import type { TermdCodexToken, TermdGrokToken, TermdOpencodeKey } from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { AppError } from '../lib/errors.ts';
 import type { Services } from '../services.ts';
@@ -89,6 +89,12 @@ export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResu
     } catch (err) {
       return { ok: false, status: null, message: vaultProblem(err, 'your ChatGPT login') };
     }
+  } else if (key.auth === 'opencode-login') {
+    try {
+      secret = (await s.terminals.client.request<TermdOpencodeKey>({ op: 'opencode.key' })).key;
+    } catch (err) {
+      return { ok: false, status: null, message: vaultProblem(err, 'your OpenCode login') };
+    }
   } else {
     secret = s.gateway.revealSecret(key);
   }
@@ -124,7 +130,10 @@ export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResu
     return { ok: true, status, message: `${host} answered. This key works.` };
   }
   if (status === 401 || status === 403) {
-    const what = key.auth === 'grok-login' || key.auth === 'codex-login' ? 'login' : 'key';
+    const what =
+      key.auth === 'grok-login' || key.auth === 'codex-login' || key.auth === 'opencode-login'
+        ? 'login'
+        : 'key';
     return {
       ok: false,
       status,

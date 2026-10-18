@@ -149,6 +149,22 @@ export class Tmux {
     await this.#tmux(['kill-session', '-t', `=${name}`]);
   }
 
+  /** The session's text with its recent history, wrapped lines joined, as plain text. */
+  async capture(name: string): Promise<string> {
+    if (!(await this.exists(name))) throw new TermdError('not_found', 'No such session.');
+    const res = await this.#tmux([
+      'capture-pane',
+      '-p',
+      '-J',
+      '-S',
+      `-${TERMINAL_LIMITS.captureLines}`,
+      '-t',
+      `=${name}:`,
+    ]);
+    if (res.code !== 0) throw new TermdError('internal', 'tmux could not read the session.');
+    return res.stdout.replace(/\s+$/, '\n');
+  }
+
   /** Stops every session (used before locking the vault). */
   async killServer(): Promise<void> {
     await this.#tmux(['kill-server']);

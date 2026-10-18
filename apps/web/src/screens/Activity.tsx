@@ -52,6 +52,7 @@ const LABELS: Record<string, string> = {
   'machine.computer_bound': 'Machine pass tied to its computer',
   'machine.other_computer': 'Machine pass used on another computer',
   'machine.blocked_computer': 'Machine pass refused on another computer',
+  'machine.off_schedule': 'Machine used outside its schedule',
   'terminal.created': 'Terminal session started',
   'terminal.renamed': 'Terminal session renamed',
   'terminal.killed': 'Terminal session closed',
@@ -79,6 +80,7 @@ const WARN = new Set([
   'machine.bad_pass_lockout',
   'machine.other_computer',
   'machine.blocked_computer',
+  'machine.off_schedule',
 ]);
 
 function describe(e: AuditEntry): string {
