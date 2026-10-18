@@ -45,6 +45,9 @@ const WINE = program('AGENTBOX_TEST_WINE', ['wine64', 'wine', '/usr/lib/wine/win
 const MINGW = program('AGENTBOX_TEST_MINGW', ['x86_64-w64-mingw32-gcc']);
 const WINEPREFIX = join(tmpdir(), 'agentbox-test-wine');
 
+/** The pass, then "." and the computer ID the wrapper read from the registry. */
+const keyPattern = (pass: string) => new RegExp(`^${pass}\\.[0-9a-f-]{16,}$`);
+
 let h: Harness;
 let laptop: Browser;
 let dir: string;
@@ -192,80 +195,94 @@ function computer(base: string) {
 }
 
 describe.skipIf(!PWSH)('Windows machine setup script', () => {
-  it('sets up, reports, refreshes and uninstalls with PowerShell', async () => {
-    const base = await listen();
-    const keys = [
-      await addKey({ preset: 'anthropic', name: 'Claude', slug: 'anthropic' }),
-      await addKey({ preset: 'openai', name: 'OpenAI', slug: 'openai', model: 'gpt-5.1-codex' }),
-    ];
-    const { pass } = await addMachine(keys.map((k) => k.id));
-    const pc = computer(base);
+  it(
+    'sets up, reports, refreshes and uninstalls with PowerShell',
+    { timeout: 60_000 },
+    async () => {
+      const base = await listen();
+      const keys = [
+        await addKey({ preset: 'anthropic', name: 'Claude', slug: 'anthropic' }),
+        await addKey({ preset: 'openai', name: 'OpenAI', slug: 'openai', model: 'gpt-5.1-codex' }),
+      ];
+      const { pass } = await addMachine(keys.map((k) => k.id));
+      const pc = computer(base);
 
-    const report = await pc.pwsh(pc.script, [], { AGENTBOX_PASS: pass });
-    expect(report).toContain('This computer is set up as "windows-pc"');
-    expect(report).toContain('These commands now use your agentbox keys: claude codex opencode');
-    expect(report).toContain('claude: install the claude CLI as usual');
-    // OpenCode reads the pass file next to its settings; the pass is in neither.
-    const ocText = readFileSync(join(pc.data, 'opencode', 'opencode.json'), 'utf8');
-    expect(ocText).not.toContain(pass);
-    const oc = JSON.parse(ocText) as {
-      provider: Record<string, { options: { apiKey: string } }>;
-      enabled_providers: string[];
-    };
-    expect(oc.enabled_providers).toEqual(['anthropic', 'openai']);
-    expect(oc.provider.openai?.options.apiKey).toBe('{file:../pass}');
-    const ocCmd = readFileSync(join(pc.bin, 'opencode.cmd'), 'utf8');
-    expect(ocCmd).not.toContain(pass);
-    expect(ocCmd).toContain(
-      'set "OPENCODE_CONFIG=%LOCALAPPDATA%\\agentbox\\opencode\\opencode.json"',
-    );
-    expect(ocCmd).toContain('set "OPENCODE_AUTH_CONTENT={}"');
-    expect(ocCmd).toContain('set "ANTHROPIC_API_KEY="');
-    // agentbox knows which computer and user set it up.
-    const computers = h.services.gateway.listMachines()[0]?.computers ?? [];
-    expect(computers).toHaveLength(1);
-    expect(computers[0]?.os).not.toBe('');
-    expect(readFileSync(join(pc.data, 'pass'), 'utf8')).toBe(`${pass}\r\n`);
-    expect(existsSync(join(pc.bin, 'claude.cmd'))).toBe(true);
-    expect(existsSync(join(pc.bin, 'codex.cmd'))).toBe(true);
-    expect(existsSync(join(pc.bin, 'grok.cmd'))).toBe(false);
-    // The pass is read at run time, never written into a wrapper.
-    expect(readFileSync(join(pc.bin, 'claude.cmd'), 'utf8')).not.toContain(pass);
+      const report = await pc.pwsh(pc.script, [], { AGENTBOX_PASS: pass });
+      expect(report).toContain('This computer is set up as "windows-pc"');
+      expect(report).toContain('These commands now use your agentbox keys: claude codex opencode');
+      expect(report).toContain('claude: install the claude CLI as usual');
+      // OpenCode reads the pass file next to its settings; the pass is in neither.
+      const ocText = readFileSync(join(pc.data, 'opencode', 'opencode.json'), 'utf8');
+      expect(ocText).not.toContain(pass);
+      const oc = JSON.parse(ocText) as {
+        provider: Record<string, { options: { apiKey: string } }>;
+        enabled_providers: string[];
+      };
+      expect(oc.enabled_providers).toEqual(['anthropic', 'openai']);
+      expect(oc.provider.openai?.options.apiKey).toBe('{file:../pass}');
+      const ocCmd = readFileSync(join(pc.bin, 'opencode.cmd'), 'utf8');
+      expect(ocCmd).not.toContain(pass);
+      expect(ocCmd).toContain(
+        'set "OPENCODE_CONFIG=%LOCALAPPDATA%\\agentbox\\opencode\\opencode.json"',
+      );
+      expect(ocCmd).toContain('set "OPENCODE_AUTH_CONTENT={}"');
+      expect(ocCmd).toContain('set "ANTHROPIC_API_KEY="');
+      // agentbox knows which computer and user set it up.
+      const computers = h.services.gateway.listMachines()[0]?.computers ?? [];
+      expect(computers).toHaveLength(1);
+      expect(computers[0]?.os).not.toBe('');
+      // No MachineGuid to read here, so the setup made up an ID and tied the pass to it.
+      expect(readFileSync(join(pc.data, 'computer-id'), 'utf8')).toMatch(/^[0-9a-f]{32}$/);
+      expect(readFileSync(join(pc.data, 'pass'), 'utf8')).not.toContain('.');
+      expect(h.services.gateway.listMachines()[0]?.computerHash).not.toBeNull();
+      expect(readFileSync(join(pc.bin, 'claude.cmd'), 'utf8')).toContain(
+        'for /f "usebackq delims=" %%P in ("%agentbox_pass%") do set "ANTHROPIC_AUTH_TOKEN=%%P%agentbox_sfx%"',
+      );
+      expect(readFileSync(join(pc.data, 'pass'), 'utf8')).toBe(`${pass}\r\n`);
+      expect(existsSync(join(pc.bin, 'claude.cmd'))).toBe(true);
+      expect(existsSync(join(pc.bin, 'codex.cmd'))).toBe(true);
+      expect(existsSync(join(pc.bin, 'grok.cmd'))).toBe(false);
+      // The pass is read at run time, never written into a wrapper.
+      expect(readFileSync(join(pc.bin, 'claude.cmd'), 'utf8')).not.toContain(pass);
 
-    // The saved copy came from agentbox's public address; this one talks to the test server.
-    const tool = join(pc.bin, 'agentbox-machine.ps1');
-    expect(readFileSync(tool, 'utf8')).toBe(renderMachineScript(h.config.origin, 'machine.ps1'));
-    writeFileSync(tool, readFileSync(pc.script));
-    const status = await pc.pwsh(tool, ['status'], { AGENTBOX_CLI: '1' });
-    expect(status).toContain('Machine: windows-pc');
-    expect(status).toContain(`codex -> ${base}/gw/openai (OpenAI, model gpt-5.1-codex)`);
+      // The saved copy came from agentbox's public address; this one talks to the test server.
+      const tool = join(pc.bin, 'agentbox-machine.ps1');
+      expect(readFileSync(tool, 'utf8')).toBe(renderMachineScript(h.config.origin, 'machine.ps1'));
+      writeFileSync(tool, readFileSync(pc.script));
+      const status = await pc.pwsh(tool, ['status'], { AGENTBOX_CLI: '1' });
+      expect(status).toContain('Machine: windows-pc');
+      expect(status).toContain(`codex -> ${base}/gw/openai (OpenAI, model gpt-5.1-codex)`);
 
-    // Refresh picks up a new key. (AGENTBOX_FRESH skips fetching the newest script,
-    // which would come from agentbox's public address.)
-    const more = await addKey({ preset: 'xai', name: 'xAI', slug: 'xai' });
-    await h.reauth(laptop);
-    const machineId = h.services.gateway.listMachines()[0]?.id ?? '';
-    const edit = await laptop.request({
-      method: 'PATCH',
-      url: `/api/gateway/machines/${machineId}`,
-      payload: { keyIds: [...keys.map((k) => k.id), more.id] },
-    });
-    expect(edit.statusCode, edit.body).toBe(200);
-    const refreshed = await pc.pwsh(tool, ['refresh'], { AGENTBOX_CLI: '1', AGENTBOX_FRESH: '1' });
-    expect(refreshed).toContain(
-      'These commands now use your agentbox keys: claude codex grok opencode',
-    );
-    expect(existsSync(join(pc.bin, 'grok.cmd'))).toBe(true);
+      // Refresh picks up a new key. (AGENTBOX_FRESH skips fetching the newest script,
+      // which would come from agentbox's public address.)
+      const more = await addKey({ preset: 'xai', name: 'xAI', slug: 'xai' });
+      await h.reauth(laptop);
+      const machineId = h.services.gateway.listMachines()[0]?.id ?? '';
+      const edit = await laptop.request({
+        method: 'PATCH',
+        url: `/api/gateway/machines/${machineId}`,
+        payload: { keyIds: [...keys.map((k) => k.id), more.id] },
+      });
+      expect(edit.statusCode, edit.body).toBe(200);
+      const refreshed = await pc.pwsh(tool, ['refresh'], {
+        AGENTBOX_CLI: '1',
+        AGENTBOX_FRESH: '1',
+      });
+      expect(refreshed).toContain(
+        'These commands now use your agentbox keys: claude codex grok opencode',
+      );
+      expect(existsSync(join(pc.bin, 'grok.cmd'))).toBe(true);
 
-    // Without AGENTBOX_FRESH it fetches the newest script and runs that, which here
-    // tries agentbox's public address.
-    await expect(pc.pwsh(tool, ['refresh'], { AGENTBOX_CLI: '1' })).rejects.toThrow(
-      `could not reach ${h.config.origin}`,
-    );
+      // Without AGENTBOX_FRESH it fetches the newest script and runs that, which here
+      // tries agentbox's public address.
+      await expect(pc.pwsh(tool, ['refresh'], { AGENTBOX_CLI: '1' })).rejects.toThrow(
+        `could not reach ${h.config.origin}`,
+      );
 
-    await pc.pwsh(tool, ['uninstall'], { AGENTBOX_CLI: '1' });
-    expect(existsSync(pc.data)).toBe(false);
-  });
+      await pc.pwsh(tool, ['uninstall'], { AGENTBOX_CLI: '1' });
+      expect(existsSync(pc.data)).toBe(false);
+    },
+  );
 
   it('moves a CLI installed just for you out of the system PATH, with your permission', async () => {
     const base = await listen();
@@ -368,7 +385,7 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
 
       const claude = pc.seen('claude');
       expect(claude.vars.get('ANTHROPIC_BASE_URL')).toBe(url('anthropic'));
-      expect(claude.vars.get('ANTHROPIC_AUTH_TOKEN')).toBe(pass);
+      expect(claude.vars.get('ANTHROPIC_AUTH_TOKEN')).toMatch(keyPattern(pass));
       expect(claude.vars.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')).toBe('1');
       expect(claude.vars.has('ANTHROPIC_API_KEY')).toBe(false);
       expect(claude.vars.has('ANTHROPIC_MODEL')).toBe(false);
@@ -392,19 +409,19 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
       expect(codex.args).toMatch(/-c model=gpt-5\.1-codex --flag "two words"$/);
 
       const grok = pc.seen('grok');
-      expect(grok.vars.get('XAI_API_KEY')).toBe(pass);
+      expect(grok.vars.get('XAI_API_KEY')).toMatch(keyPattern(pass));
       expect(grok.vars.get('GROK_XAI_API_BASE_URL')).toBe(`${url('xai')}/v1`);
       expect(grok.vars.get('GROK_HOME')).toBe(`${pc.wLocal}\\agentbox\\grok`);
       expect(grok.vars.get('GROK_TELEMETRY_ENABLED')).toBe('false');
 
       const kimi = pc.seen('kimi');
       expect(kimi.vars.get('KIMI_MODEL_BASE_URL')).toBe(`${url('kimi')}/v1`);
-      expect(kimi.vars.get('KIMI_MODEL_API_KEY')).toBe(pass);
+      expect(kimi.vars.get('KIMI_MODEL_API_KEY')).toMatch(keyPattern(pass));
       expect(kimi.vars.get('KIMI_MODEL_NAME')).toBe('kimi-k2');
 
       const gemini = pc.seen('gemini');
       expect(gemini.vars.get('GOOGLE_GEMINI_BASE_URL')).toBe(url('gemini'));
-      expect(gemini.vars.get('GEMINI_API_KEY')).toBe(pass);
+      expect(gemini.vars.get('GEMINI_API_KEY')).toMatch(keyPattern(pass));
       expect(gemini.vars.get('GEMINI_CLI_HOME')).toBe(`${pc.wLocal}\\agentbox\\gemini`);
       expect(gemini.vars.has('GOOGLE_API_KEY')).toBe(false);
       expect(
@@ -481,7 +498,9 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
       });
       const sent = readFileSync(log, 'latin1');
       // The pass goes on stdin, not the command line.
-      expect(sent).toContain(`STDIN=header = "Authorization: Bearer ${pass}"`);
+      expect(sent).toMatch(
+        new RegExp(`STDIN=header = "Authorization: Bearer ${pass}\\.[0-9a-f-]{16,}"`),
+      );
       expect(sent).toContain(`ARG=${base}/gw/supergrok/_session`);
       expect(sent).toContain('ARG=--proto\nARG==http,https\n');
       expect(

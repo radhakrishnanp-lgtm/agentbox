@@ -295,6 +295,12 @@ export const machine = sqliteTable(
       .$type<MachineComputer[]>()
       .notNull()
       .default(sql`'[]'`),
+    /** Works only on the computer below, from any address. */
+    computerLock: integer('computer_lock', { mode: 'boolean' }).notNull().default(false),
+    /** SHA-256 of the first computer ID seen with this pass; its computer, and when. */
+    computerHash: text('computer_hash'),
+    computerLabel: text('computer_label'),
+    computerAt: integer('computer_at'),
     ...timestamps,
   },
   (t) => [uniqueIndex('machine_pass_hash').on(t.passHash)],

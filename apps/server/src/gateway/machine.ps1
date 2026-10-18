@@ -44,6 +44,8 @@
   $Data = Join-Path $env:LOCALAPPDATA 'agentbox'
   $Bin = Join-Path $Data 'bin'
   $PassFile = Join-Path $Data 'pass'
+  # Only used when Windows has no computer ID to read.
+  $IdFile = Join-Path $Data 'computer-id'
   # Wrappers find their folders through %LOCALAPPDATA% at run time, so they work
   # whatever characters your user name has.
   $DataCmd = '%LOCALAPPDATA%\agentbox'
@@ -110,8 +112,44 @@
     return @{ Code = [int]$response.StatusCode; Body = $body }
   }
 
+  # This computer's own ID (Windows' MachineGuid), read each time and never stored
+  # next to the pass, so a copy of the pass alone does not work on another computer
+  # that is tied to it. The wrappers read it the same way (Get-IdLines).
+  function Get-ComputerId {
+    $id = ''
+    if (($Proto -eq '=http,https') -and $env:AGENTBOX_TEST_COMPUTER_ID) { $id = $env:AGENTBOX_TEST_COMPUTER_ID }
+    if (-not $id -and $OnWindows) {
+      try {
+        foreach ($line in @(& reg.exe query 'HKLM\SOFTWARE\Microsoft\Cryptography' /v MachineGuid /reg:64 2>$null)) {
+          if ($line -match 'MachineGuid\s+REG_SZ\s+(\S+)') { $id = $Matches[1] }
+        }
+      } catch { $id = '' }
+    }
+    if (-not $id -and (Test-Path -LiteralPath $IdFile)) { $id = ([IO.File]::ReadAllText($IdFile)).Trim() }
+    $id = $id -replace '[^A-Za-z0-9-]', ''
+    if ($id.Length -lt 16) { $id = '' }
+    return $id
+  }
+
+  # A computer with no ID of its own gets a random one, kept with the pass.
+  function Initialize-ComputerId {
+    if (Get-ComputerId) { return }
+    New-Item -ItemType Directory -Force -Path $Data | Out-Null
+    $bytes = New-Object byte[] 16
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    [IO.File]::WriteAllText($IdFile, (($bytes | ForEach-Object { $_.ToString('x2') }) -join ''), [Text.Encoding]::ASCII)
+    Protect-File $IdFile
+  }
+
+  # What the CLIs send: the pass and this computer's ID.
+  function Get-Key([string]$Pass) {
+    $id = Get-ComputerId
+    if ($id) { return "$Pass.$id" }
+    return $Pass
+  }
+
   function Get-Setup([string]$Pass) {
-    $r = Invoke-Agentbox '/gw/_machine' $Pass
+    $r = Invoke-Agentbox '/gw/_machine' (Get-Key $Pass)
     if ($r.Code -ne 200) {
       $msg = 'unknown error'
       if ($r.Body -match '"message":"(agentbox: )?([^"]*)"') { $msg = $Matches[2] }
@@ -246,7 +284,7 @@
       "  echo agentbox: $Cli is not installed on this computer yet. 1>&2",
       '  exit /b 127',
       ')'
-    )
+    ) + (Get-IdLines)
   }
 
   function Get-WrapperTail {
@@ -281,7 +319,7 @@
       $lines += 'if not defined GEMINI_CLI_TRUST_WORKSPACE set "GEMINI_CLI_TRUST_WORKSPACE=true"'
     }
     foreach ($name in $r.Set.Keys) {
-      if ($r.Set[$name] -eq '@PASS@') { $lines += "for /f `"usebackq delims=`" %%P in (`"%agentbox_pass%`") do set `"$name=%%P`"" }
+      if ($r.Set[$name] -eq '@PASS@') { $lines += "for /f `"usebackq delims=`" %%P in (`"%agentbox_pass%`") do set `"$name=%%P%agentbox_sfx%`"" }
       else { $lines += "set `"$name=$($r.Set[$name])`"" }
     }
     # A .cmd CLI (npm installs those) takes over from here and never returns, which is fine.
@@ -295,7 +333,7 @@
   # Prints this machine's pass. codex runs it (model_providers.agentbox.auth.command)
   # whenever it needs the key, including from its own background server.
   function Write-CodexToken {
-    Write-Ascii (Join-Path $Bin 'agentbox-codex-token.cmd') @(
+    Write-Ascii (Join-Path $Bin 'agentbox-codex-token.cmd') (@(
       '@echo off',
       "rem Written by agentbox: gives codex this machine's agentbox pass.",
       'setlocal DisableDelayedExpansion',
@@ -303,10 +341,27 @@
       'if not exist "%agentbox_pass%" (',
       '  echo agentbox: no pass on this computer. Run: agentbox-machine refresh 1>&2',
       '  exit /b 1',
-      ')',
-      'for /f "usebackq delims=" %%P in ("%agentbox_pass%") do echo %%P',
+      ')'
+    ) + (Get-IdLines) + @(
+      'for /f "usebackq delims=" %%P in ("%agentbox_pass%") do echo %%P%agentbox_sfx%',
       'exit /b 0'
+    ))
+  }
+
+  # Lines that read this computer's ID into agentbox_id (and ".ID" into
+  # agentbox_sfx, put after the pass) the way Get-ComputerId does. Inline in each
+  # wrapper: a helper run through "for /f" would start a second cmd.
+  function Get-IdLines {
+    $lines = @('set "agentbox_id="')
+    # Local tests stand in for several computers on one.
+    if ($Proto -eq '=http,https') { $lines += 'if defined AGENTBOX_TEST_COMPUTER_ID set "agentbox_id=%AGENTBOX_TEST_COMPUTER_ID%"' }
+    $lines += @(
+      'if not defined agentbox_id for /f "tokens=1,2,*" %%A in (''reg query "HKLM\SOFTWARE\Microsoft\Cryptography" /v MachineGuid /reg:64 2^>nul'') do if /i "%%A"=="MachineGuid" set "agentbox_id=%%C"',
+      "if not defined agentbox_id if exist `"$DataCmd\computer-id`" for /f `"usebackq delims=`" %%G in (`"$DataCmd\computer-id`") do set `"agentbox_id=%%G`"",
+      'set "agentbox_sfx="',
+      'if defined agentbox_id set "agentbox_sfx=.%agentbox_id%"'
     )
+    return $lines
   }
 
   # A "SuperGrok login" key: grok signs in with this machine's pass (the helper
@@ -317,7 +372,7 @@
     # Older setups stored a real xAI token here; it would keep working after Stop.
     Remove-Item -LiteralPath (Join-Path $Data 'grok-login\auth.json') -Force -ErrorAction SilentlyContinue
     # grok runs this through cmd /C, finding it on the PATH the wrapper sets.
-    Write-Ascii (Join-Path $Bin 'agentbox-grok-token.cmd') @(
+    Write-Ascii (Join-Path $Bin 'agentbox-grok-token.cmd') (@(
       '@echo off',
       "rem Written by agentbox: signs grok in with this machine's agentbox pass (no xAI token here).",
       'setlocal DisableDelayedExpansion',
@@ -326,8 +381,9 @@
       '  echo agentbox: no pass on this computer. Run: agentbox-machine refresh 1>&2',
       '  exit /b 1',
       ')',
-      'set "agentbox_key="',
-      'for /f "usebackq delims=" %%P in ("%agentbox_pass%") do set "agentbox_key=%%P"',
+      'set "agentbox_key="'
+    ) + (Get-IdLines) + @(
+      'for /f "usebackq delims=" %%P in ("%agentbox_pass%") do set "agentbox_key=%%P%agentbox_sfx%"',
       'set "agentbox_body=%TEMP%\agentbox-grok-%RANDOM%%RANDOM%"',
       'set "agentbox_code=000"',
       # The pass goes to curl on stdin, not on its command line.
@@ -342,7 +398,7 @@
       'if exist "%agentbox_body%.json" type "%agentbox_body%.json" 1>&2',
       'del /q "%agentbox_body%.json" "%agentbox_body%.code" 2>nul',
       'exit /b 1'
-    )
+    ))
     $lines = Get-WrapperHead 'grok' 'runs the real grok, signed in with your agentbox Grok login.'
     # Anything that would sign grok in some other way, or send it elsewhere.
     foreach ($name in @('XAI_API_KEY', 'GROK_API_KEY', 'GROK_CODE_XAI_API_KEY', 'GROK_XAI_API_BASE_URL', 'GROK_BASE_URL',
@@ -383,7 +439,7 @@
   function Write-OpenCode {
     $dir = Join-Path $Data 'opencode'
     Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
-    $r = Invoke-Agentbox '/gw/_opencode' (Read-SavedPass)
+    $r = Invoke-Agentbox '/gw/_opencode' (Get-Key (Read-SavedPass))
     if ($r.Code -ne 200) { return }
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $config = $r.Body.Replace('{file:pass}', '{file:../pass}')
@@ -394,6 +450,8 @@
       "set `"OPENCODE_CONFIG=$DataCmd\opencode\opencode.json`"",
       'set "OPENCODE_AUTH_CONTENT={}"',
       'set "OPENCODE_DISABLE_AUTOUPDATE=1"',
+      # Sent as a header, so OpenCode can keep reading the pass from its file.
+      'set "AGENTBOX_COMPUTER=%agentbox_id%"',
       '"%agentbox_real%" %*'
     )
     $lines += Get-WrapperTail
@@ -628,6 +686,7 @@ try {
       'install' {
         $pass = (Read-Pass).Trim()
         if (-not (Test-Pass $pass)) { Fail "that doesn't look like an agentbox pass (it starts with abx_)." }
+        Initialize-ComputerId
         $setup = Get-Setup $pass
         Install-Pass $pass
         Remove-Item Env:\AGENTBOX_PASS -ErrorAction SilentlyContinue
@@ -648,6 +707,7 @@ try {
             return
           }
         }
+        Initialize-ComputerId
         $setup = Get-Setup $pass
         Install-Setup $setup
         Set-UserPath $true

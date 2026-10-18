@@ -325,8 +325,79 @@ describe('machines', () => {
     expect(config.provider.google?.options).toEqual({
       baseURL: `${ORIGIN}/gw/gemini/v1beta`,
       apiKey: '{file:pass}',
+      headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
     });
     expect(config.provider['agentbox-kimi-code']?.npm).toBe('@ai-sdk/openai-compatible');
+  });
+
+  it('ties a pass to its computer, and when locked lets that computer in from any address', async () => {
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id], { computerLock: true });
+    const A = '0d0af05e-1234-4abc-9def-00112233aabb';
+    const B = 'ffffffff222233334444555566667777';
+    const call = (credential: string, ip: string, headers: Record<string, string> = {}) =>
+      gw({
+        url: '/gw/anthropic/v1/messages',
+        headers: { 'x-api-key': credential, ...headers },
+        payload: messages,
+        ip,
+      });
+    const summary = async () =>
+      (await laptop.get('/api/gateway')).json<{ machines: MachineCreated['machine'][] }>()
+        .machines[0];
+
+    // Older wrappers send the pass alone: refused, with what to do.
+    const plain = await call(pass, '198.51.100.50');
+    expect(plain.statusCode).toBe(403);
+    expect(plain.json().error.message).toMatch(/agentbox-machine refresh/);
+
+    // The first computer is remembered; then any address works for it.
+    expect((await call(`${pass}.${A}`, '198.51.100.50')).statusCode).toBe(200);
+    expect((await call(`${pass}.${A.toUpperCase()}`, '203.0.113.77')).statusCode).toBe(200);
+    expect((await call(pass, '192.0.2.8', { 'x-agentbox-computer': A })).statusCode).toBe(200);
+    let m = await summary();
+    expect(m?.computerLock).toBe(true);
+    expect(m?.boundComputer).not.toBeNull();
+    expect(m?.ipRules).toEqual([]);
+    expect(m?.pendingIp).toBeNull();
+
+    // Another computer with a copy of the pass is refused, from any address.
+    const other = await call(`${pass}.${B}`, '198.51.100.50');
+    expect(other.statusCode).toBe(403);
+    expect(other.json().error.message).toMatch(/belongs to another computer/);
+
+    // Forget it: the next computer takes its place.
+    await h.reauth(laptop);
+    const forgot = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { forgetComputer: true },
+    });
+    expect(forgot.statusCode, forgot.body).toBe(200);
+    expect(forgot.json().boundComputer).toBeNull();
+    expect((await call(`${pass}.${B}`, '198.51.100.9')).statusCode).toBe(200);
+    expect((await call(`${pass}.${A}`, '198.51.100.9')).statusCode).toBe(403);
+
+    // Lock off: the address rules apply again, and another computer is only reported.
+    await h.reauth(laptop);
+    await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { computerLock: false, approveNewIps: false },
+    });
+    expect((await call(`${pass}.${A}`, '198.51.100.9')).statusCode).toBe(200);
+    m = await summary();
+    expect(m?.computerLock).toBe(false);
+
+    const actions = h.services.db
+      .select()
+      .from(auditLog)
+      .all()
+      .map((a) => a.action);
+    expect(actions.filter((a) => a === 'machine.computer_bound')).toHaveLength(2);
+    expect(actions).toContain('machine.blocked_computer');
+    expect(actions).toContain('machine.other_computer');
+    expect(h.services.audit.verify().ok).toBe(true);
   });
 
   it('serves the setup script with this agentbox address and no secrets', async () => {

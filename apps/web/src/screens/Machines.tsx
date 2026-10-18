@@ -320,6 +320,11 @@ function MachineList({
 }
 
 function addressLine(m: MachineSummary): string {
+  if (m.computerLock) {
+    return m.boundComputer
+      ? `Only on ${m.boundComputer.label || 'its computer'}, from any address`
+      : 'Locks to the first computer that uses it, from any address';
+  }
   if (m.approveNewIps && m.ipRules.length === 0) return 'Locks to the first address that uses it';
   const on = m.ipRules.filter((r) => !m.ipOff.includes(r));
   const named = on.map((r) => (m.ipLabels[r] ? `${r} (${m.ipLabels[r]})` : r));
@@ -606,6 +611,8 @@ function MachineForm(props: MachineFormProps) {
   );
   const addresses = useAddressList(machine);
   const [approveNewIps, setApproveNewIps] = useState(machine ? machine.approveNewIps : true);
+  const [computerLock, setComputerLock] = useState(machine?.computerLock ?? false);
+  const [forget, setForget] = useState(false);
   // When editing, "keep" leaves the pass's end date as it is.
   const [lifetime, setLifetime] = useState(
     editing ? 'keep' : String(GATEWAY_LIMITS.lifetimeDefaultDays),
@@ -630,6 +637,7 @@ function MachineForm(props: MachineFormProps) {
       ipOff: list.filter((a) => !a.on).map((a) => a.rule),
       rpm: Number(rpm),
       approveNewIps,
+      computerLock,
       dailyTokenLimit: daily.trim() ? Number(daily.replace(/[,_\s]/g, '')) : null,
     };
     const days = lifetime === 'never' ? null : Number(lifetime);
@@ -637,6 +645,7 @@ function MachineForm(props: MachineFormProps) {
       ? machineUpdateSchema.safeParse({
           ...fields,
           ...(lifetime === 'keep' ? {} : { renewDays: days }),
+          ...(forget ? { forgetComputer: true } : {}),
         })
       : machineCreateSchema.safeParse({ ...fields, lifetimeDays: days });
     if (!parsed.success) {
@@ -711,35 +720,81 @@ function MachineForm(props: MachineFormProps) {
           <input
             type="checkbox"
             className="mt-0.5 size-5 shrink-0"
-            checked={approveNewIps}
+            checked={computerLock}
             onChange={(e) => {
-              setApproveNewIps(e.target.checked);
+              setComputerLock(e.target.checked);
             }}
           />
           <span>
-            <span className="font-medium">Lock to this computer (recommended)</span>
+            <span className="font-medium">Lock to this computer, from any address</span>
             <span className="block text-muted">
-              The pass works only from the allowed addresses. With an empty list, the first address
-              that uses it is added. Any other address is blocked until you allow it here, so a
-              copied pass is useless on another computer.
+              For home internet whose address keeps changing. agentbox knows the computer by its own
+              ID (Windows' machine ID, /etc/machine-id on Linux, the hardware ID on a Mac), which it
+              sends with every request. The pass then works from any address, but only on that
+              computer. Addresses are not checked while this is on.
             </span>
           </span>
         </label>
-        <AddressList
-          list={addresses}
-          title={editing ? 'Allowed addresses' : 'Also allow these addresses (optional)'}
-          hint={
-            editing
-              ? 'Only these addresses work.' +
-                (approveNewIps
-                  ? ' New ones wait for your OK.'
-                  : ' With an empty list, any address works.')
-              : approveNewIps
-                ? 'Only if you know them already. Otherwise leave it empty and the first address is used.'
-                : "The computer's public IP. Then a stolen pass is useless anywhere else. Leave it empty for laptops that move around."
-          }
-          lastIp={machine?.lastIp ?? null}
-        />
+        {editing && machine.boundComputer ? (
+          <div className="flex flex-wrap items-center gap-3 rounded-[var(--radius-input)] border border-border px-3 py-2 text-sm">
+            <span className="min-w-0 flex-1">
+              {forget
+                ? 'Forgotten when you save. The next computer that uses the pass takes its place.'
+                : `Tied to ${machine.boundComputer.label || 'a computer'} since ${dateTime(machine.boundComputer.at)}.`}
+            </span>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setForget((f) => !f);
+              }}
+            >
+              {forget ? 'Keep this computer' : 'Forget this computer'}
+            </Button>
+          </div>
+        ) : computerLock ? (
+          <p className="text-sm text-muted">
+            The first computer that uses the pass (normally when you run the setup command) is the
+            one. Computers set up earlier need{' '}
+            <code className="font-mono">agentbox-machine refresh</code> first.
+          </p>
+        ) : null}
+        {computerLock ? null : (
+          <>
+            <label className="flex items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-5 shrink-0"
+                checked={approveNewIps}
+                onChange={(e) => {
+                  setApproveNewIps(e.target.checked);
+                }}
+              />
+              <span>
+                <span className="font-medium">Lock to its address (recommended)</span>
+                <span className="block text-muted">
+                  The pass works only from the allowed addresses. With an empty list, the first
+                  address that uses it is added. Any other address is blocked until you allow it
+                  here, so a copied pass is useless on another computer.
+                </span>
+              </span>
+            </label>
+            <AddressList
+              list={addresses}
+              title={editing ? 'Allowed addresses' : 'Also allow these addresses (optional)'}
+              hint={
+                editing
+                  ? 'Only these addresses work.' +
+                    (approveNewIps
+                      ? ' New ones wait for your OK.'
+                      : ' With an empty list, any address works.')
+                  : approveNewIps
+                    ? 'Only if you know them already. Otherwise leave it empty and the first address is used.'
+                    : "The computer's public IP. Then a stolen pass is useless anywhere else. Leave it empty for laptops that move around."
+              }
+              lastIp={machine?.lastIp ?? null}
+            />
+          </>
+        )}
         <div className="grid gap-4 sm:grid-cols-3">
           <Select
             label={editing ? 'Pass end date' : 'Pass works for'}
@@ -1390,8 +1445,9 @@ function HowItWorks() {
         <p>
           Someone with root on that computer can use your AI through the pass until you stop it.
           They can't read or copy your real keys, can't take over your accounts, and can't use the
-          pass from another computer: with “Lock to this computer” on, a new address is blocked
-          until you allow it here.
+          pass from another computer: with “Lock to its address” on, a new address is blocked until
+          you allow it here, and with “Lock to this computer” on, another computer is refused
+          whatever its address.
         </p>
       </CardBody>
     </Card>

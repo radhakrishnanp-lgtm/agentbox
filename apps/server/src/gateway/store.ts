@@ -239,6 +239,11 @@ export class GatewayStore {
       pendingIp: m.pendingIp,
       pendingIpAt: m.pendingIpAt === null ? null : iso(m.pendingIpAt),
       computers: m.computers,
+      computerLock: m.computerLock,
+      boundComputer:
+        m.computerHash === null
+          ? null
+          : { label: m.computerLabel ?? '', at: iso(m.computerAt ?? m.updatedAt) },
       today,
     };
   }
@@ -263,6 +268,7 @@ export class GatewayStore {
       dailyTokenLimit: number | null;
       lifetimeDays: number | null;
       approveNewIps: boolean;
+      computerLock?: boolean | undefined;
     },
     actor: string,
     ip: string,
@@ -290,6 +296,10 @@ export class GatewayStore {
       pendingIp: null,
       pendingIpAt: null,
       computers: [],
+      computerLock: input.computerLock ?? false,
+      computerHash: null,
+      computerLabel: null,
+      computerAt: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -305,6 +315,7 @@ export class GatewayStore {
         keys: row.keyIds.length,
         ipLocked: row.ipRules.length > 0,
         approveNewIps: row.approveNewIps,
+        computerLock: row.computerLock,
         rpm: row.rpm,
         dailyTokenLimit: row.dailyTokenLimit,
         expiresAt: row.expiresAt === null ? null : iso(row.expiresAt),
@@ -324,7 +335,9 @@ export class GatewayStore {
       rpm?: number | undefined;
       dailyTokenLimit?: number | null | undefined;
       approveNewIps?: boolean | undefined;
+      computerLock?: boolean | undefined;
       renewDays?: number | null | undefined;
+      forgetComputer?: true | undefined;
     },
     actor: string,
     ip: string,
@@ -348,6 +361,14 @@ export class GatewayStore {
     if (patch.rpm !== undefined) set.rpm = patch.rpm;
     if (patch.dailyTokenLimit !== undefined) set.dailyTokenLimit = patch.dailyTokenLimit;
     if (patch.approveNewIps !== undefined) set.approveNewIps = patch.approveNewIps;
+    if (patch.computerLock !== undefined && patch.computerLock !== m.computerLock) {
+      set.computerLock = patch.computerLock;
+    }
+    if (patch.forgetComputer && m.computerHash !== null) {
+      set.computerHash = null;
+      set.computerLabel = null;
+      set.computerAt = null;
+    }
     if (patch.renewDays !== undefined) {
       set.expiresAt = patch.renewDays === null ? null : now + patch.renewDays * DAY;
     }
@@ -359,7 +380,10 @@ export class GatewayStore {
       targetId: id,
       ip,
       details: {
-        changed: Object.keys(set).filter((k) => k !== 'updatedAt'),
+        changed: Object.keys(set).filter(
+          (k) => k !== 'updatedAt' && k !== 'computerLabel' && k !== 'computerAt',
+        ),
+        ...(set.computerHash === null ? { forgotComputer: m.computerLabel ?? '' } : {}),
         ...(set.expiresAt !== undefined
           ? { expiresAt: set.expiresAt === null ? null : iso(set.expiresAt) }
           : {}),
@@ -483,6 +507,29 @@ export class GatewayStore {
       details: { name: m.name, rule: ipRules[0] },
     });
     return { ...m, ipRules, ipLabels };
+  }
+
+  /**
+   * Ties the pass to the first computer ID it is used with. Only one request can
+   * win: a second computer racing the first is then simply "another computer".
+   */
+  bindComputer(m: MachineRow, computerHash: string, label: string, ip: string): MachineRow {
+    const now = this.#clock.now();
+    const res = this.#db
+      .update(machine)
+      .set({ computerHash, computerLabel: label, computerAt: now })
+      .where(and(eq(machine.id, m.id), isNull(machine.computerHash)))
+      .run();
+    if (res.changes === 0) return this.getMachine(m.id) ?? m;
+    this.#audit.record({
+      actor: `machine:${m.id}`,
+      action: 'machine.computer_bound',
+      targetType: 'machine',
+      targetId: m.id,
+      ip,
+      details: { name: m.name, computerName: label, locked: m.computerLock },
+    });
+    return { ...m, computerHash, computerLabel: label, computerAt: now };
   }
 
   /** Remembers a refused address so the owner can allow it. */

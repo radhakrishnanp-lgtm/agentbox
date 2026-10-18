@@ -195,6 +195,25 @@ export const GATEWAY_LIMITS = {
 export const PASS_PREFIX = 'abx_';
 export const passSchema = z.string().regex(/^abx_[A-Za-z0-9_-]{43}$/);
 
+/**
+ * What a machine's CLI sends as its key: the pass, then (from computers set up
+ * since computer IDs came in) "." and the computer's own ID, read from the
+ * computer each time and never stored next to the pass.
+ */
+export function splitPass(
+  raw: string | undefined,
+): { pass: string; computerId: string | null } | null {
+  const m = /^(abx_[A-Za-z0-9_-]{43})(?:\.([A-Za-z0-9-]{1,80}))?$/.exec(raw ?? '');
+  if (!m?.[1]) return null;
+  return { pass: m[1], computerId: normaliseComputerId(m[2]) };
+}
+
+/** Lower case without dashes, so the same ID read by different tools matches. Null if it's too short to be one. */
+export function normaliseComputerId(raw: string | undefined): string | null {
+  const id = (raw ?? '').toLowerCase().replace(/-/g, '');
+  return /^[a-z0-9]{16,64}$/.test(id) ? id : null;
+}
+
 export const slugSchema = z
   .string()
   .trim()
@@ -241,6 +260,11 @@ const machineFields = {
    * refused until you allow it in agentbox, so a copied pass is useless elsewhere.
    */
   approveNewIps: z.boolean(),
+  /**
+   * Works only on the computer it was set up on, from any address. For home
+   * internet whose address changes. Address rules are not checked while this is on.
+   */
+  computerLock: z.boolean(),
 };
 const lifetimeSchema = z.union([
   z.literal(7),
@@ -257,15 +281,21 @@ export const machineCreateSchema = z.object({
   ipOff: machineFields.ipOff.default([]),
   rpm: machineFields.rpm.default(GATEWAY_LIMITS.rpmDefault),
   approveNewIps: machineFields.approveNewIps.default(true),
+  computerLock: machineFields.computerLock.default(false),
   lifetimeDays: lifetimeSchema.default(GATEWAY_LIMITS.lifetimeDefaultDays),
 });
 export type MachineCreate = z.input<typeof machineCreateSchema>;
 
 /** No defaults here: a field left out stays as it is (renewing must not clear the IP lock). */
-export const machineUpdateSchema = z.object(machineFields).partial().extend({
-  /** Extends the pass from now by this many days (null = until revoked). */
-  renewDays: lifetimeSchema.optional(),
-});
+export const machineUpdateSchema = z
+  .object(machineFields)
+  .partial()
+  .extend({
+    /** Extends the pass from now by this many days (null = until revoked). */
+    renewDays: lifetimeSchema.optional(),
+    /** Forgets the computer the pass is tied to; the next one that uses it takes its place. */
+    forgetComputer: z.literal(true).optional(),
+  });
 export type MachineUpdate = z.input<typeof machineUpdateSchema>;
 
 export interface AiKeySummary {
@@ -321,6 +351,10 @@ export interface MachineSummary {
   pendingIpAt: string | null;
   /** Computers that set themselves up with this pass, newest first. */
   computers: MachineComputer[];
+  /** Works only on its own computer, from any address. */
+  computerLock: boolean;
+  /** The computer the pass is tied to, once one has used it. */
+  boundComputer: { label: string; at: string } | null;
   today: { requests: number; inputTokens: number; outputTokens: number };
 }
 
