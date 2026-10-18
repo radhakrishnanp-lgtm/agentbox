@@ -1,6 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { recoveryCodeSchema } from '@agentbox/shared';
+import {
+  aiKeyCreateSchema,
+  presetKeyName,
+  PROVIDER_PRESETS,
+  recoveryCodeSchema,
+} from '@agentbox/shared';
 import { AuditLog, GENESIS_HASH } from '../src/audit/audit.ts';
 import { generateRecoveryCode, normaliseRecoveryCode } from '../src/auth/recovery-codes.ts';
 import { matchTotpStep, newTotpSecret, totpCodeAt } from '../src/auth/totp.ts';
@@ -224,5 +229,18 @@ describe('environment validation', () => {
       loadConfig({ ...base, AGENTBOX_LISTEN: '127.0.0.1:8787', AGENTBOX_TRUSTED_PROXIES: 'nope' }),
     ).toThrow();
     expect(() => loadConfig({ ...base, AGENTBOX_TRUSTED_PROXIES: '127.0.0.1' })).toThrow();
+  });
+});
+
+describe('AI key presets', () => {
+  it('start with a name that can be saved as it is', () => {
+    for (const p of PROVIDER_PRESETS) {
+      const name = presetKeyName(p);
+      expect(name.length, p.id).toBeGreaterThan(0);
+      expect(aiKeyCreateSchema.shape.name.safeParse(name).success, `${p.id}: ${name}`).toBe(true);
+    }
+    expect(presetKeyName(PROVIDER_PRESETS.find((p) => p.id === 'opencode-login')!)).toBe(
+      'OpenCode Zen/Go login',
+    );
   });
 });

@@ -53,6 +53,13 @@ export interface ProviderPreset {
   note?: string;
   /** Nothing to paste: the login comes from somewhere else on agentbox. */
   noSecret?: boolean;
+  /** Name filled in for a new key, when the label is too long for one. */
+  keyName?: string;
+}
+
+/** The name a new key of this preset starts with: short enough to save as it is. */
+export function presetKeyName(p: ProviderPreset): string {
+  return (p.keyName ?? p.label.split(' (')[0] ?? p.label).slice(0, GATEWAY_LIMITS.keyNameMax);
 }
 
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
@@ -163,6 +170,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
     id: 'opencode-login',
     label: 'OpenCode Zen/Go login from your Terminals (OpenCode)',
+    keyName: 'OpenCode Zen/Go login',
     upstream: 'https://opencode.ai/inference',
     auth: 'opencode-login',
     cli: null,
