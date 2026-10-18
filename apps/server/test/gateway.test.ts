@@ -950,6 +950,32 @@ describe('who may use the relay', () => {
     expect(actions).toEqual(expect.arrayContaining(['machine.started', 'machine.deleted']));
   });
 
+  it('saves a machine whose key was removed, dropping that key', async () => {
+    const kept = await addKey({ slug: 'kept' });
+    const gone = await addKey({ preset: 'openai', name: 'Old', slug: 'old' });
+    const { machine } = await addMachine([kept.id, gone.id]);
+    await h.reauth(laptop);
+    const removed = await laptop.request({ method: 'DELETE', url: `/api/gateway/keys/${gone.id}` });
+    expect(removed.statusCode, removed.body).toBe(200);
+    await h.reauth(laptop);
+    const saved = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { name: 'renamed', keyIds: [kept.id, gone.id] },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    expect(saved.json().keyIds).toEqual([kept.id]);
+    // A key the machine never had must still exist.
+    await h.reauth(laptop);
+    const bad = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/machines/${machine.id}`,
+      payload: { keyIds: [kept.id, '00000000-0000-4000-8000-000000000000'] },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.body).toMatch(/no longer exists/);
+  });
+
   it('keeps the address lock and limits when a pass is renewed', async () => {
     const key = await addKey();
     const { machine } = await addMachine([key.id], {
