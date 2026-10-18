@@ -356,11 +356,18 @@ export class GatewayStore {
   ): MachineRow {
     const m = this.getMachine(id);
     if (!m) throw new AppError('not_found', 'That machine was not found.');
-    if (patch.keyIds) this.#checkKeys(patch.keyIds);
+    let keyIds = patch.keyIds;
+    if (keyIds) {
+      // A key removed since the machine got it: drop it quietly. Forms opened
+      // before it was removed still send it.
+      const active = new Set(this.activeKeys().map((k) => k.id));
+      keyIds = keyIds.filter((k) => active.has(k) || !m.keyIds.includes(k));
+      this.#checkKeys(keyIds);
+    }
     const now = this.#clock.now();
     const set: Partial<MachineRow> = { updatedAt: now };
     if (patch.name !== undefined) set.name = patch.name;
-    if (patch.keyIds !== undefined) set.keyIds = [...new Set(patch.keyIds)];
+    if (keyIds !== undefined) set.keyIds = [...new Set(keyIds)];
     if (patch.ipRules !== undefined) set.ipRules = normaliseIpRules(patch.ipRules);
     if (patch.ipRules !== undefined || patch.ipLabels !== undefined) {
       set.ipLabels = normaliseIpLabels(set.ipRules ?? m.ipRules, patch.ipLabels ?? m.ipLabels);

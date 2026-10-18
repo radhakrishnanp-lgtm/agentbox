@@ -617,7 +617,12 @@ function MachineForm(props: MachineFormProps) {
   const { setSession } = useAuth();
   const [name, setName] = useState(machine?.name ?? '');
   const [keyIds, setKeyIds] = useState<string[]>(
-    machine ? machine.keyIds : keys.length === 1 && keys[0] ? [keys[0].id] : [],
+    // Keys removed since then aren't listed, so they can't stay ticked either.
+    machine
+      ? machine.keyIds.filter((id) => keys.some((k) => k.id === id))
+      : keys.length === 1 && keys[0]
+        ? [keys[0].id]
+        : [],
   );
   const addresses = useAddressList(machine);
   const [approveNewIps, setApproveNewIps] = useState(machine ? machine.approveNewIps : true);
