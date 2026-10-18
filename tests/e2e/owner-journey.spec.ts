@@ -647,6 +647,8 @@ ${machine.home}/.local/share:
   await page.evaluate('navigator.clipboard.writeText("echo PASTED-$((5*5))")');
   await screen.click({ button: 'right', position: { x: 120, y: 60 } });
   await menu.getByRole('menuitem', { name: 'Paste' }).click();
+  // Reading the clipboard takes a moment; press Enter once the text is in.
+  await expect.poll(() => tmuxScreen('e2e')).toContain('echo PASTED-$((5*5))');
   await page.keyboard.press('Enter');
   await expect.poll(() => tmuxScreen('e2e')).toContain('PASTED-25');
   await screen.click({ button: 'right', position: { x: 120, y: 60 } });
