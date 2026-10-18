@@ -54,6 +54,11 @@ const CLI_LABEL: Record<string, string> = {
 const selectClass =
   'block min-h-11 w-full rounded-[var(--radius-input)] border border-border bg-bg px-3 text-base focus-visible:outline-2';
 
+/** The command on a machine that uses a key: its CLI, or opencode for OpenCode's own login. */
+function usedBy(k: { cli: string | null; preset: string }): string | null {
+  return k.cli ?? (k.preset === 'opencode-login' ? 'opencode' : null);
+}
+
 function Select({
   label,
   hint,
@@ -717,7 +722,7 @@ function MachineForm(props: MachineFormProps) {
               />
               <span>
                 {k.name}
-                <span className="text-muted">{k.cli ? ` · for ${k.cli}` : ''}</span>
+                <span className="text-muted">{usedBy(k) ? ` · for ${usedBy(k)}` : ''}</span>
               </span>
             </label>
           ))}
@@ -1346,7 +1351,7 @@ function KeyRow({
         <p className="text-sm text-muted">
           {preset?.label ?? k.preset} ·{' '}
           {preset?.noSecret ? 'uses the login in your vault' : `ends in ••••${k.hint}`}
-          {k.cli ? ` · used by ${k.cli}` : ''}
+          {usedBy(k) ? ` · used by ${usedBy(k)}` : ''}
           {k.model ? ` · model ${k.model}` : ''}
         </p>
         <p className="text-sm break-all text-muted">
@@ -1544,6 +1549,11 @@ function AddKey({
         {preset && preset.cli ? (
           <p className="text-sm text-muted">
             Machines get a {CLI_LABEL[preset.cli]} command that uses this key.
+          </p>
+        ) : preset?.id === 'opencode-login' ? (
+          <p className="text-sm text-muted">
+            Machines get an opencode command that uses this login, with OpenCode Zen and Go models.
+            The other CLIs never use it.
           </p>
         ) : (
           <p className="text-sm text-muted">

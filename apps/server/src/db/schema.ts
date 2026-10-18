@@ -246,6 +246,7 @@ export const aiKey = sqliteTable(
         'anthropic-oauth',
         'grok-login',
         'codex-login',
+        'opencode-login',
       ],
     }).notNull(),
     cli: text('cli', { enum: ['claude', 'codex', 'grok', 'kimi', 'gemini'] }),

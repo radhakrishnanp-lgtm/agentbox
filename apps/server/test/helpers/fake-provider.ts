@@ -40,7 +40,8 @@ export class FakeProvider {
           headers: req.headers,
           body,
         });
-        const path = (req.url ?? '').split('?')[0] ?? '';
+        // OpenCode Zen and Go live under /inference and /inference/go.
+        const path = ((req.url ?? '').split('?')[0] ?? '').replace(/^\/inference(\/go)?(?=\/)/, '');
         const json = (status: number, value: unknown, extra: Record<string, string> = {}) => {
           res.writeHead(status, {
             'content-type': 'application/json',

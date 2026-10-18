@@ -1654,6 +1654,147 @@ describe('ChatGPT login for Codex', () => {
   });
 });
 
+describe('OpenCode login for OpenCode', () => {
+  const ZEN = 'sk-zen-test-key-0000';
+
+  async function loginKey() {
+    const key = await addKey({
+      preset: 'opencode-login',
+      name: 'OpenCode',
+      slug: 'opencode',
+      secret: '',
+    });
+    expect(key.upstream).toBe('https://opencode.ai/inference');
+    // Point it at the stand-in provider instead of OpenCode.
+    h.services.db
+      .update(aiKey)
+      .set({ upstream: `${provider.url}/inference` })
+      .where(eq(aiKey.id, key.id))
+      .run();
+    return key;
+  }
+
+  it('adds the vault key in the header OpenCode used, for Zen and Go, and only for OpenCode', async () => {
+    const key = await loginKey();
+    expect(key.auth).toBe('opencode-login');
+    expect(key.cli).toBeNull();
+    expect(key.hint).toBe('VPS login');
+    const { pass } = await addMachine([key.id]);
+    const ask = vi
+      .spyOn(h.services.terminals.client, 'request')
+      .mockResolvedValue({ key: ZEN, provider: 'opencode' });
+
+    const bearer = await gw({
+      url: '/gw/opencode/v1/chat/completions',
+      headers: { authorization: `Bearer ${pass}` },
+      payload: { model: 'some-model', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(bearer.statusCode, bearer.body).toBe(200);
+    expect(ask).toHaveBeenCalledWith({ op: 'opencode.key' });
+    let seen = provider.last();
+    expect(seen.url).toBe('/inference/v1/chat/completions');
+    expect(seen.headers.authorization).toBe(`Bearer ${ZEN}`);
+    expect(seen.headers['x-api-key']).toBeUndefined();
+    expect(JSON.stringify(seen.headers)).not.toContain(pass);
+
+    const anthropicStyle = await gw({
+      url: '/gw/opencode/go/v1/messages',
+      headers: { 'x-api-key': pass },
+      payload: messages,
+    });
+    expect(anthropicStyle.statusCode, anthropicStyle.body).toBe(200);
+    seen = provider.last();
+    expect(seen.url).toBe('/inference/go/v1/messages');
+    expect(seen.headers['x-api-key']).toBe(ZEN);
+    expect(seen.headers.authorization).toBeUndefined();
+    expect(JSON.stringify(seen.headers)).not.toContain(pass);
+
+    // Older setup scripts see no CLI for it, so they wire nothing up.
+    const text = await gw({
+      method: 'GET',
+      url: '/gw/_machine',
+      headers: { authorization: `Bearer ${pass}`, accept: 'text/plain' },
+    });
+    expect(text.body.trim().split('\n')[1]?.split('\t').slice(0, 3)).toEqual([
+      'key',
+      'opencode',
+      '-',
+    ]);
+
+    // OpenCode gets its own two services, both through agentbox.
+    const res = await gw({
+      method: 'GET',
+      url: '/gw/_opencode',
+      headers: { authorization: `Bearer ${pass}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const config = res.json<{
+      provider: Record<string, { npm?: string; options: { baseURL: string; apiKey: string } }>;
+      enabled_providers: string[];
+    }>();
+    expect(config.enabled_providers).toEqual(['opencode', 'opencode-go']);
+    expect(config.provider['opencode']).toEqual({
+      options: {
+        baseURL: `${ORIGIN}/gw/opencode/v1`,
+        apiKey: '{file:pass}',
+        headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+      },
+    });
+    expect(config.provider['opencode-go']?.options.baseURL).toBe(`${ORIGIN}/gw/opencode/go/v1`);
+    expect(res.body).not.toContain(ZEN);
+  });
+
+  it('says clearly when OpenCode has no Zen key or the vault is locked', async () => {
+    const key = await loginKey();
+    const { pass } = await addMachine([key.id]);
+    const ask = vi.spyOn(h.services.terminals.client, 'request');
+    const call = () =>
+      gw({
+        url: '/gw/opencode/v1/chat/completions',
+        headers: { authorization: `Bearer ${pass}` },
+        payload: { model: 'm', messages: [] },
+      });
+    const { TermdRefused } = await import('../src/terminals/client.ts');
+    ask.mockRejectedValueOnce(new TermdRefused('vault_locked', 'Unlock the vault first.'));
+    const locked = await call();
+    expect(locked.statusCode).toBe(403);
+    expect(locked.json().error.message).toMatch(/vault on agentbox is locked/);
+    ask.mockRejectedValueOnce(
+      new TermdRefused(
+        'not_found',
+        'OpenCode on agentbox is signed in only with anthropic. agentbox can pass on only an OpenCode Zen or Go key: open a terminal in agentbox, run opencode auth login and pick OpenCode Zen.',
+      ),
+    );
+    const other = await call();
+    expect(other.statusCode).toBe(403);
+    expect(other.json().error.message).toMatch(/signed in only with anthropic/);
+    expect(provider.seen).toHaveLength(0);
+  });
+
+  it('never sends the vault key to an address you typed, or as a pasted key', async () => {
+    await h.reauth(laptop);
+    const res = await laptop.post('/api/gateway/keys', {
+      preset: 'opencode-login',
+      name: 'OpenCode',
+      slug: 'opencode',
+      secret: '',
+      upstream: 'https://attacker.example',
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().upstream).toBe('https://opencode.ai/inference');
+    await h.reauth(laptop);
+    const custom = await laptop.post('/api/gateway/keys', {
+      preset: 'custom',
+      name: 'x',
+      slug: 'x-login',
+      secret: 'something-long',
+      upstream: provider.url,
+      auth: 'opencode-login',
+    });
+    expect(custom.statusCode).toBe(400);
+  });
+});
+
 describe('Kimi Code subscription key', () => {
   it('sends Kimi Code to the coding plan address with the plan key', async () => {
     const key = await addKey({

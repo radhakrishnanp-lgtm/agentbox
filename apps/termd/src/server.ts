@@ -20,6 +20,7 @@ import type { TermdConfig } from './config.ts';
 import { TermdError, Tmux, checkName, clampSize } from './tmux.ts';
 import { CodexLogin } from './codex.ts';
 import { GrokLogin } from './grok.ts';
+import { OpencodeLogin } from './opencode.ts';
 import { Vault, VaultError } from './vault.ts';
 
 /** Requests come from agentbox-web, but are still checked like any input. */
@@ -44,6 +45,7 @@ export class Termd {
   readonly vault: Vault;
   readonly grok: GrokLogin;
   readonly codex: CodexLogin;
+  readonly opencode: OpencodeLogin;
   readonly #env: NodeJS.ProcessEnv;
   readonly #log: Log;
   readonly #attached = new Set<pty.IPty>();
@@ -58,6 +60,7 @@ export class Termd {
     this.vault = vault ?? new Vault(config, env);
     this.grok = new GrokLogin(config.home, env);
     this.codex = new CodexLogin(config.home);
+    this.opencode = new OpencodeLogin(config.home, env);
   }
 
   async listen(): Promise<void> {
@@ -196,6 +199,10 @@ export class Termd {
         case 'codex.token': {
           this.vault.assertUsable();
           return { ok: true, ...(await this.codex.token()) };
+        }
+        case 'opencode.key': {
+          this.vault.assertUsable();
+          return { ok: true, ...this.opencode.key() };
         }
         case 'vault.reset':
           this.vault.reset();

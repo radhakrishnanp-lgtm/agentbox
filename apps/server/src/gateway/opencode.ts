@@ -5,7 +5,9 @@
  * reads from a file next to the config (`{file:pass}`), never from the config.
  *
  * Subscription logins (Claude Pro/Max, ChatGPT, SuperGrok) are left out on
- * purpose: their providers allow them only in their own apps.
+ * purpose: their providers allow them only in their own apps. OpenCode's own
+ * Zen/Go key (the "OpenCode login from your Terminals") is the exception: it is
+ * OpenCode's own service, and it is wired into OpenCode only.
  */
 import type { AiKeyRow } from './store.ts';
 
@@ -13,7 +15,7 @@ import type { AiKeyRow } from './store.ts';
 export const OPENCODE_PASS = '{file:pass}';
 
 interface Provider {
-  name: string;
+  name?: string;
   npm?: string;
   options: { baseURL: string; apiKey: string; headers: Record<string, string> };
   models?: Record<string, { name: string }>;
@@ -46,6 +48,15 @@ const ROUTES: Record<
 /** Only these key kinds. Subscription logins never go to OpenCode. */
 const API_KEY_AUTH = new Set<AiKeyRow['auth']>(['x-api-key', 'bearer', 'x-goog-api-key']);
 
+/**
+ * OpenCode's own services, as OpenCode knows them (Zen and Go), and where each
+ * lives under the key's upstream (https://opencode.ai/inference).
+ */
+const OPENCODE_SERVICES = [
+  { id: 'opencode', path: '/v1' },
+  { id: 'opencode-go', path: '/go/v1' },
+] as const;
+
 /** The machine's OpenCode settings, or null when none of its keys work with OpenCode. */
 export function opencodeConfig(
   keys: readonly AiKeyRow[],
@@ -54,6 +65,20 @@ export function opencodeConfig(
   const provider: Record<string, Provider> = {};
   let model: string | undefined;
   for (const k of keys) {
+    if (k.auth === 'opencode-login') {
+      // OpenCode's built-in providers: their model lists come with OpenCode.
+      for (const service of OPENCODE_SERVICES) {
+        if (service.id in provider) continue;
+        provider[service.id] = {
+          options: {
+            baseURL: `${gatewayUrl(k.slug)}${service.path}`,
+            apiKey: OPENCODE_PASS,
+            headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+          },
+        };
+      }
+      continue;
+    }
     const route = ROUTES[k.preset];
     if (!route || !API_KEY_AUTH.has(k.auth)) continue;
     const id = route.builtIn && !(route.builtIn in provider) ? route.builtIn : `agentbox-${k.slug}`;

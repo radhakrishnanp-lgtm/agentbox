@@ -20,7 +20,7 @@ import {
   splitPass,
   type MachineComputer,
 } from '@agentbox/shared';
-import type { TermdCodexToken, TermdGrokToken } from '@agentbox/shared/termd';
+import type { TermdCodexToken, TermdGrokToken, TermdOpencodeKey } from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { DAY, MINUTE, iso } from '../lib/clock.ts';
 import { sha256Hex } from '../lib/crypto.ts';
@@ -233,6 +233,12 @@ export function upstreamHeaders(
       // What Codex itself sends with a ChatGPT sign-in.
       out['authorization'] = `Bearer ${secret}`;
       if (accountId) out['chatgpt-account-id'] = accountId;
+      break;
+    case 'opencode-login':
+      // OpenCode sends its key as x-api-key to Claude models and as a bearer
+      // token to the rest: answer in kind.
+      if (incoming['x-api-key'] !== undefined) out['x-api-key'] = secret;
+      else out['authorization'] = `Bearer ${secret}`;
       break;
     case 'anthropic-oauth': {
       out['authorization'] = `Bearer ${secret}`;
@@ -610,6 +616,25 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       }
     };
 
+    /** OpenCode's Zen/Go key from its login in the vault, or a reply explaining why there is none. */
+    const vaultOpencodeKey = async (reply: FastifyReply): Promise<string | FastifyReply> => {
+      try {
+        return (await s.terminals.client.request<TermdOpencodeKey>({ op: 'opencode.key' })).key;
+      } catch (err) {
+        const message =
+          err instanceof TermdRefused
+            ? err.code === 'vault_locked'
+              ? 'the vault on agentbox is locked. Unlock it in agentbox → Terminals.'
+              : err.message
+            : err instanceof AppError
+              ? err.message
+              : 'could not get the OpenCode login.';
+        const status = err instanceof TermdRefused && err.code !== 'internal' ? 403 : 503;
+        // 403, not 401, so OpenCode shows the message instead of retrying.
+        return fail(reply, status, 'api_error', message);
+      }
+    };
+
     // What the machine setup script needs: which CLIs to wire up, and where.
     app.get('/gw/_machine', { config: { rateLimit: false } }, async (request, reply) => {
       const m = authenticate(request, reply, undefined);
@@ -820,6 +845,13 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           // The machine's codex uses <gateway>/v1 like any OpenAI-style provider;
           // ChatGPT's Codex backend has no /v1 (…/backend-api/codex/responses).
           if (upstreamPath.startsWith('/v1/')) upstreamPath = upstreamPath.slice(3);
+        } else if (key.auth === 'opencode-login') {
+          const found = await vaultOpencodeKey(reply);
+          if (typeof found !== 'string') {
+            logRefused(reply.statusCode);
+            return found;
+          }
+          secret = found;
         } else {
           secret = s.gateway.revealSecret(key);
         }
