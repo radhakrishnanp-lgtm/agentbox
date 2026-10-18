@@ -325,6 +325,19 @@ write_opencode() {
     say "export OPENCODE_AUTH_CONTENT='{}' OPENCODE_DISABLE_AUTOUPDATE=1"
     # Sent as a header, so OpenCode can keep reading the pass from its file.
     say "AGENTBOX_COMPUTER=\$('$KEY_HELPER' --id); export AGENTBOX_COMPUTER"
+    say "dir='$dir' url='$AGENTBOX_URL' proto='$PROTO'"
+    # Fresh settings at each start, so models you add to OpenCode on agentbox
+    # show up here. The old ones stay when agentbox can't be reached.
+    cat <<'EOF'
+if new=$(mktemp "$dir/.opencode.XXXXXX" 2>/dev/null); then
+  auth=$(cat "$pass_file")
+  [ -z "$AGENTBOX_COMPUTER" ] || auth="$auth.$AGENTBOX_COMPUTER"
+  code=$(printf 'header = "Authorization: Bearer %s"\n' "$auth" |
+    curl -sS --max-time 4 --proto "$proto" -K - -o "$new" -w '%{http_code}' "$url/gw/_opencode" 2>/dev/null) || code=000
+  if [ "$code" = 200 ] && [ -s "$new" ]; then mv -f "$new" "$dir/opencode.json"; else rm -f "$new"; fi
+  unset auth code new
+fi
+EOF
     say 'exec "$real" "$@"'
   } >"$tmp"
   chmod 700 "$tmp"

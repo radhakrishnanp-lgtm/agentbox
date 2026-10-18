@@ -420,6 +420,14 @@ describe('machine setup script', () => {
       payload: { keyIds: [kimi.id] },
     });
     expect(patched.statusCode, patched.body).toBe(200);
+    // opencode itself picks up the change the next time it starts.
+    const ocFile = join(pc.home, '.local/share/agentbox/opencode/opencode.json');
+    await pc.sh('opencode run hi');
+    expect(pc.seen('opencode').args).toEqual(['run', 'hi']);
+    expect(JSON.parse(readFileSync(ocFile, 'utf8'))).toMatchObject({
+      enabled_providers: ['opencode'],
+    });
+    expect(statSync(ocFile).mode & 0o777).toBe(0o600);
     const again = await pc.sh(`sh '${script}' refresh`, { AGENTBOX_FRESH: join(dir, 'gone') });
     expect(again).toContain('opencode: ready');
     expect(existsSync(join(pc.bin, 'opencode'))).toBe(true);
@@ -427,5 +435,17 @@ describe('machine setup script', () => {
       readFileSync(join(pc.home, '.local/share/agentbox/opencode/opencode.json'), 'utf8'),
     ) as { provider: object; enabled_providers: string[] };
     expect(free).toMatchObject({ provider: {}, enabled_providers: ['opencode'] });
+
+    // agentbox out of reach: the settings it had stay, and opencode still starts.
+    await h.app.close();
+    await pc.sh('opencode run again');
+    expect(pc.seen('opencode').args).toEqual(['run', 'again']);
+    expect(JSON.parse(readFileSync(ocFile, 'utf8'))).toMatchObject({
+      enabled_providers: ['opencode'],
+    });
+    expect(readdirSync(join(pc.home, '.local/share/agentbox/opencode'))).toEqual([
+      'opencode.json',
+      'pass',
+    ]);
   });
 });

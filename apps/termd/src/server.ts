@@ -20,7 +20,7 @@ import type { TermdConfig } from './config.ts';
 import { TermdError, Tmux, checkName, clampSize } from './tmux.ts';
 import { CodexLogin } from './codex.ts';
 import { GrokLogin } from './grok.ts';
-import { OpencodeLogin } from './opencode.ts';
+import { OpencodeLogin, OpencodeSetup } from './opencode.ts';
 import { Vault, VaultError } from './vault.ts';
 
 /** Requests come from agentbox-web, but are still checked like any input. */
@@ -46,6 +46,7 @@ export class Termd {
   readonly grok: GrokLogin;
   readonly codex: CodexLogin;
   readonly opencode: OpencodeLogin;
+  readonly opencodeSetup: OpencodeSetup;
   readonly #env: NodeJS.ProcessEnv;
   readonly #log: Log;
   readonly #attached = new Set<pty.IPty>();
@@ -61,6 +62,7 @@ export class Termd {
     this.grok = new GrokLogin(config.home, env);
     this.codex = new CodexLogin(config.home);
     this.opencode = new OpencodeLogin(config.home, env);
+    this.opencodeSetup = new OpencodeSetup(config.home, env);
   }
 
   async listen(): Promise<void> {
@@ -203,6 +205,15 @@ export class Termd {
         case 'opencode.key': {
           this.vault.assertUsable();
           return { ok: true, ...this.opencode.key() };
+        }
+        case 'opencode.setup': {
+          this.vault.assertUsable();
+          return { ok: true, ...this.opencodeSetup.setup() };
+        }
+        case 'opencode.provider': {
+          this.vault.assertUsable();
+          if (typeof req.id !== 'string') throw new TermdError('bad_request', 'Unknown provider.');
+          return { ok: true, ...this.opencodeSetup.provider(req.id) };
         }
         case 'vault.reset':
           this.vault.reset();

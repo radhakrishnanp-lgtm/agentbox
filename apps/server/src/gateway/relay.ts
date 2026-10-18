@@ -20,14 +20,20 @@ import {
   splitPass,
   type MachineComputer,
 } from '@agentbox/shared';
-import type { TermdCodexToken, TermdGrokToken, TermdOpencodeKey } from '@agentbox/shared/termd';
+import type {
+  TermdCodexToken,
+  TermdGrokToken,
+  TermdOpencodeKey,
+  TermdOpencodeSetup,
+  TermdOpencodeUpstream,
+} from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { DAY, MINUTE, iso } from '../lib/clock.ts';
 import { sha256Hex } from '../lib/crypto.ts';
 import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
-import { opencodeConfig } from './opencode.ts';
+import { OPENCODE_PROVIDER_PATH, opencodeConfig } from './opencode.ts';
 import { addressCheck, machineSchedule, type AiKeyRow, type MachineRow } from './store.ts';
 import {
   TraceCollector,
@@ -236,8 +242,10 @@ export function upstreamHeaders(
       break;
     case 'opencode-login':
       // OpenCode sends its key as x-api-key to Claude models and as a bearer
-      // token to the rest: answer in kind.
+      // token to the rest: answer in kind. No key: a provider that needs none.
+      if (!secret) break;
       if (incoming['x-api-key'] !== undefined) out['x-api-key'] = secret;
+      else if (incoming['x-goog-api-key'] !== undefined) out['x-goog-api-key'] = secret;
       else out['authorization'] = `Bearer ${secret}`;
       break;
     case 'anthropic-oauth': {
@@ -616,6 +624,39 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       }
     };
 
+    /** What OpenCode on agentbox has set up, or null when the terminals can't say (a locked vault). */
+    const vaultOpencodeSetup = async (): Promise<TermdOpencodeSetup | null> => {
+      try {
+        return await s.terminals.client.request<TermdOpencodeSetup>({ op: 'opencode.setup' });
+      } catch {
+        return null;
+      }
+    };
+
+    /** A provider set up in OpenCode on agentbox, or a reply explaining why it can't be used. */
+    const vaultOpencodeProvider = async (
+      id: string,
+      reply: FastifyReply,
+    ): Promise<TermdOpencodeUpstream | FastifyReply> => {
+      try {
+        return await s.terminals.client.request<TermdOpencodeUpstream>({
+          op: 'opencode.provider',
+          id,
+        });
+      } catch (err) {
+        const message =
+          err instanceof TermdRefused
+            ? err.code === 'vault_locked'
+              ? 'the vault on agentbox is locked. Unlock it in agentbox → Terminals.'
+              : err.message
+            : err instanceof AppError
+              ? err.message
+              : 'could not read OpenCode on agentbox.';
+        const status = err instanceof TermdRefused && err.code !== 'internal' ? 403 : 503;
+        return fail(reply, status, 'api_error', message);
+      }
+    };
+
     /** OpenCode's Zen/Go key from its login in the vault, or a reply explaining why there is none. */
     const vaultOpencodeKey = async (reply: FastifyReply): Promise<string | FastifyReply> => {
       try {
@@ -688,7 +729,10 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       const m = authenticate(request, reply, undefined);
       if (!('id' in m)) return m;
       const keys = s.gateway.activeKeys().filter((k) => m.keyIds.includes(k.id));
-      const config = opencodeConfig(keys, (slug) => s.gateway.gatewayUrl(slug));
+      const setup = keys.some((k) => k.auth === 'opencode-login')
+        ? await vaultOpencodeSetup()
+        : null;
+      const config = opencodeConfig(keys, (slug) => s.gateway.gatewayUrl(slug), setup);
       reply.header('cache-control', 'no-store');
       return reply.type('application/json').send(`${JSON.stringify(config, null, 2)}\n`);
     });
@@ -813,6 +857,7 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         let accountId: string | undefined;
         let upstreamBase = key.upstream;
         let upstreamPath = path;
+        let extraHeaders: Record<string, string> = {};
         if (key.auth === 'grok-login') {
           if (path === '/_session' && request.method === 'GET')
             return grokSession(request, reply, m);
@@ -844,6 +889,22 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           // The machine's codex uses <gateway>/v1 like any OpenAI-style provider;
           // ChatGPT's Codex backend has no /v1 (…/backend-api/codex/responses).
           if (upstreamPath.startsWith('/v1/')) upstreamPath = upstreamPath.slice(3);
+        } else if (key.auth === 'opencode-login' && path.startsWith(OPENCODE_PROVIDER_PATH)) {
+          // A provider set up in OpenCode on agentbox: /p/<its id>/<its path>.
+          const rest = path.slice(OPENCODE_PROVIDER_PATH.length);
+          const cut = rest.indexOf('/');
+          const id = cut < 0 ? rest : rest.slice(0, cut);
+          const found = await vaultOpencodeProvider(id, reply);
+          if (!('baseURL' in found)) {
+            logRefused(reply.statusCode);
+            return found;
+          }
+          upstreamBase = found.baseURL;
+          upstreamPath = cut < 0 ? '' : rest.slice(cut);
+          secret = found.key ?? '';
+          extraHeaders = Object.fromEntries(
+            Object.entries(found.headers).map(([k, v]) => [k.toLowerCase(), v]),
+          );
         } else if (key.auth === 'opencode-login') {
           const found = await vaultOpencodeKey(reply);
           if (typeof found !== 'string') {
@@ -942,14 +1003,17 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         const send = (b: Buffer | undefined, beta: string | null = null) =>
           upstreamRequest(`${upstreamBase}${upstreamPath}${query}`, {
             method: request.method as 'GET',
-            headers: upstreamHeaders(
-              beta === null
-                ? request.headers
-                : { ...request.headers, 'anthropic-beta': beta || undefined },
-              key,
-              secret,
-              accountId,
-            ),
+            headers: {
+              ...upstreamHeaders(
+                beta === null
+                  ? request.headers
+                  : { ...request.headers, 'anthropic-beta': beta || undefined },
+                key,
+                secret,
+                accountId,
+              ),
+              ...extraHeaders,
+            },
             ...(b && request.method !== 'GET' ? { body: b } : {}),
             signal: ctrl.signal,
             dispatcher,

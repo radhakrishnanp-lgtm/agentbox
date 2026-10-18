@@ -16,7 +16,7 @@ export type KeyAuthStyle =
   | 'grok-login'
   /** No stored key: the Codex (ChatGPT) login in the terminal vault is added on the way. */
   | 'codex-login'
-  /** No stored key: OpenCode's own Zen/Go key from its login in the terminal vault. */
+  /** No stored key: OpenCode's own setup in the terminal vault (its providers and its Zen/Go key). */
   | 'opencode-login';
 
 export const KEY_AUTH_STYLES = [
@@ -169,16 +169,16 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   },
   {
     id: 'opencode-login',
-    label: 'OpenCode Zen/Go login from your Terminals (OpenCode)',
-    keyName: 'OpenCode Zen/Go login',
+    label: 'Your OpenCode setup from your Terminals (OpenCode)',
+    keyName: 'OpenCode from your Terminals',
     upstream: 'https://opencode.ai/inference',
     auth: 'opencode-login',
     cli: null,
     slug: 'opencode',
-    help: 'Sign in to OpenCode once in a terminal on this server: run opencode auth login and pick OpenCode Zen (or Go). Nothing to paste here.',
+    help: 'Set up OpenCode once in a terminal on this server: add your own providers and models in its settings (~/.config/opencode/opencode.json), or sign in with opencode auth login and pick OpenCode Zen (or Go). Nothing to paste here.',
     experimental: true,
     noSecret: true,
-    note: "OpenCode on your other computers sends every request through agentbox with the machine's pass, and agentbox adds the OpenCode Zen or Go key from your login in the vault. Only OpenCode uses it, never the other CLIs. The key never leaves this server, so Stop cuts a machine off at once. The vault must be unlocked. Not yet checked against the live OpenCode service.",
+    note: "OpenCode on your other computers gets the providers and models you set up in OpenCode on this server, and OpenCode's free models. Their requests go through agentbox with the machine's pass, and agentbox adds the keys from OpenCode's settings in the vault, so the keys never leave this server and Stop cuts a machine off at once. Only OpenCode uses this, never the other CLIs. The vault must be unlocked.",
   },
   {
     id: 'openrouter',

@@ -23,14 +23,14 @@ Open https://agent.krish.in.net and sign in. Go to **Terminals** and unlock the 
 
 Then add each subscription once.
 
-| Your subscription        | In an agentbox **Shell** terminal                                                                                          | Then in **Machines → AI keys → Add**, pick                         |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| **Claude Pro/Max**       | `claude setup-token`, sign in, copy the token (starts with `sk-ant-oat`)                                                   | **Claude Pro/Max subscription token**, paste the token             |
-| **SuperGrok**            | `grok`, sign in with your SuperGrok account                                                                                | **SuperGrok login from your Terminals**, nothing to paste          |
-| **ChatGPT (Codex)**      | `npm install -g @openai/codex` (first time only), then `codex login --device-auth`, open the link and sign in with ChatGPT | **ChatGPT login from your Terminals (Codex)**, nothing to paste    |
-| **OpenCode Zen or Go**   | `opencode auth login`, pick **OpenCode Zen** and paste the key from opencode.ai (used by `opencode` only)                  | **OpenCode Zen/Go login from your Terminals**, nothing to paste    |
-| **Kimi Code (Moderato)** | nothing: in the browser open the Kimi Code console (kimi.com/code) → **API keys** → create a key                           | **Kimi Code subscription key**, paste it (model `kimi-for-coding`) |
-| API keys (pay as you go) | nothing                                                                                                                    | the matching **… API key** choice, paste the key                   |
+| Your subscription        | In an agentbox **Shell** terminal                                                                                                               | Then in **Machines → AI keys → Add**, pick                         |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| **Claude Pro/Max**       | `claude setup-token`, sign in, copy the token (starts with `sk-ant-oat`)                                                                        | **Claude Pro/Max subscription token**, paste the token             |
+| **SuperGrok**            | `grok`, sign in with your SuperGrok account                                                                                                     | **SuperGrok login from your Terminals**, nothing to paste          |
+| **ChatGPT (Codex)**      | `npm install -g @openai/codex` (first time only), then `codex login --device-auth`, open the link and sign in with ChatGPT                      | **ChatGPT login from your Terminals (Codex)**, nothing to paste    |
+| **OpenCode**             | `opencode`: add your own providers and models in its settings, and/or `opencode auth login` and pick **OpenCode Zen** (used by `opencode` only) | **Your OpenCode setup from your Terminals**, nothing to paste      |
+| **Kimi Code (Moderato)** | nothing: in the browser open the Kimi Code console (kimi.com/code) → **API keys** → create a key                                                | **Kimi Code subscription key**, paste it (model `kimi-for-coding`) |
+| API keys (pay as you go) | nothing                                                                                                                                         | the matching **… API key** choice, paste the key                   |
 
 To install the CLIs themselves in the terminal, use `npm install -g` (for example `npm install -g @anthropic-ai/claude-code`). No sudo is needed.
 

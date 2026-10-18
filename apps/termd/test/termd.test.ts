@@ -8,7 +8,13 @@ import { FrameDecoder, TERMD_FRAME, encodeFrame } from '@agentbox/shared/termd';
 import { loadTermdConfig, terminalEnv, type TermdConfig } from '../src/config.ts';
 import { Termd } from '../src/server.ts';
 import { CODEX_CLIENT_ID, CODEX_TOKEN_URL, CodexLogin, readCodexLogin } from '../src/codex.ts';
-import { OpencodeLogin, readOpencodeKey } from '../src/opencode.ts';
+import {
+  OpencodeLogin,
+  OpencodeSetup,
+  allowedBaseUrl,
+  parseJsonc,
+  readOpencodeKey,
+} from '../src/opencode.ts';
 import { GrokLogin, XAI_ISSUER, jwtExpiry, readGrokLogin } from '../src/grok.ts';
 import { explainMountFailure, mountPoints } from '../src/vault.ts';
 
@@ -633,5 +639,132 @@ describe('OpenCode login for machines', () => {
       JSON.stringify({ 'opencode-go': { type: 'api', key: KEY } }),
     );
     expect(new OpencodeLogin(dir, { XDG_DATA_HOME: xdg }).key().provider).toBe('opencode-go');
+  });
+});
+
+describe('OpenCode setup for machines', () => {
+  it('reads OpenCode settings with comments and trailing commas', () => {
+    expect(
+      parseJsonc('{\n // a comment\n "a": "http://x//y", /* more */ "b": [1, 2,],\n}'),
+    ).toEqual({ a: 'http://x//y', b: [1, 2] });
+  });
+
+  it('sends requests only to https, or to http on this server', () => {
+    expect(allowedBaseUrl('https://api.example.com/v1/')).toBe('https://api.example.com/v1');
+    expect(allowedBaseUrl('http://localhost:11434/v1')).toBe('http://localhost:11434/v1');
+    expect(allowedBaseUrl('http://api.example.com/v1')).toBeNull();
+    expect(allowedBaseUrl('https://user:pw@api.example.com')).toBeNull();
+    expect(allowedBaseUrl('file:///etc/passwd')).toBeNull();
+    expect(allowedBaseUrl(42)).toBeNull();
+  });
+
+  it('shares your own providers and models, never their keys', () => {
+    const home = mkdtempSync(join(tmpdir(), 'termd-opencode-setup-'));
+    const setup = new OpencodeSetup(home);
+    expect(setup.setup()).toEqual({ zen: null, providers: [], model: null, skipped: [] });
+
+    execFileSync('mkdir', [
+      '-p',
+      join(home, '.config/opencode'),
+      join(home, '.local/share/opencode'),
+    ]);
+    writeFileSync(join(home, 'my-key.txt'), 'sk-from-a-file\n');
+    writeFileSync(
+      join(home, '.config/opencode/opencode.jsonc'),
+      `{
+        // Krish's own models
+        "$schema": "https://opencode.ai/config.json",
+        "model": "mine/glm-5.3-flash",
+        "provider": {
+          "mine": {
+            "name": "My models",
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {
+              "baseURL": "https://llm.example.com/v1",
+              "apiKey": "sk-literal-key",
+              "headers": { "X-Org": "pixstone" },
+            },
+            "models": {
+              "glm-5.3-flash": {
+                "name": "GLM 5.3 Flash",
+                "limit": { "context": 128000, "output": 8192 },
+                "options": { "apiKey": "sk-hidden", "temperature": 0.2 },
+                "headers": { "Authorization": "Bearer sk-hidden" },
+              },
+            },
+          },
+          "fromfile": {
+            "options": { "baseURL": "https://other.example.com/v1", "apiKey": "{file:~/my-key.txt}" },
+            "models": { "m": {} },
+          },
+          "fromauth": { "options": { "baseURL": "https://third.example.com" } },
+          "local": { "options": { "baseURL": "http://127.0.0.1:11434/v1" } },
+          "fromenv": { "options": { "baseURL": "https://env.example.com", "apiKey": "{env:SECRET}" } },
+          "outside": { "options": { "baseURL": "https://o.example.com", "apiKey": "{file:/etc/hostname}" } },
+          "nohttps": { "options": { "baseURL": "http://plain.example.com/v1" } },
+          "noaddress": { "models": { "x": {} } },
+          "opencode": { "options": { "baseURL": "https://evil.example.com" } },
+        },
+      }`,
+    );
+    writeFileSync(
+      join(home, '.local/share/opencode/auth.json'),
+      JSON.stringify({
+        fromauth: { type: 'api', key: 'sk-from-auth' },
+        anthropic: { type: 'oauth', access: 'never' },
+      }),
+    );
+
+    const found = setup.setup();
+    expect(found.zen).toBeNull();
+    expect(found.model).toBe('mine/glm-5.3-flash');
+    expect(found.providers.map((p) => p.id)).toEqual([
+      'mine',
+      'fromfile',
+      'fromauth',
+      'local',
+      'fromenv',
+      'outside',
+    ]);
+    expect(found.skipped).toEqual(['nohttps', 'noaddress']);
+    expect(found.providers[0]).toEqual({
+      id: 'mine',
+      name: 'My models',
+      npm: '@ai-sdk/openai-compatible',
+      models: {
+        'glm-5.3-flash': {
+          name: 'GLM 5.3 Flash',
+          limit: { context: 128000, output: 8192 },
+          options: { temperature: 0.2 },
+        },
+      },
+    });
+    expect(JSON.stringify(found)).not.toMatch(/sk-|llm\.example|pixstone/);
+
+    expect(setup.provider('mine')).toEqual({
+      baseURL: 'https://llm.example.com/v1',
+      key: 'sk-literal-key',
+      headers: { 'X-Org': 'pixstone' },
+    });
+    expect(setup.provider('fromfile').key).toBe('sk-from-a-file');
+    expect(setup.provider('fromauth').key).toBe('sk-from-auth');
+    expect(setup.provider('local')).toEqual({
+      baseURL: 'http://127.0.0.1:11434/v1',
+      key: null,
+      headers: {},
+    });
+    // Keys only this server's environment or files outside your home folder hold: none.
+    expect(setup.provider('fromenv').key).toBeNull();
+    expect(setup.provider('outside').key).toBeNull();
+    for (const id of ['nohttps', 'noaddress', 'opencode', 'anthropic', '../x']) {
+      expect(() => setup.provider(id)).toThrow(/has no provider called/);
+    }
+
+    writeFileSync(
+      join(home, '.local/share/opencode/auth.json'),
+      JSON.stringify({ 'opencode-go': { type: 'api', key: 'sk-zen-test-key-0000' } }),
+    );
+    expect(setup.setup().zen).toBe('opencode-go');
+    rmSync(home, { recursive: true, force: true });
   });
 });

@@ -6,7 +6,12 @@
  */
 import { request as upstreamRequest } from 'undici';
 import type { KeyCheckResult } from '@agentbox/shared';
-import type { TermdCodexToken, TermdGrokToken, TermdOpencodeKey } from '@agentbox/shared/termd';
+import type {
+  TermdCodexToken,
+  TermdGrokToken,
+  TermdOpencodeKey,
+  TermdOpencodeSetup,
+} from '@agentbox/shared/termd';
 import { TermdRefused } from '../terminals/client.ts';
 import { AppError } from '../lib/errors.ts';
 import type { Services } from '../services.ts';
@@ -90,6 +95,29 @@ export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResu
       return { ok: false, status: null, message: vaultProblem(err, 'your ChatGPT login') };
     }
   } else if (key.auth === 'opencode-login') {
+    let setup: TermdOpencodeSetup;
+    try {
+      setup = await s.terminals.client.request<TermdOpencodeSetup>({ op: 'opencode.setup' });
+    } catch (err) {
+      return { ok: false, status: null, message: vaultProblem(err, 'your OpenCode setup') };
+    }
+    const skipped = setup.skipped.length
+      ? ` Left out, because ${setup.skipped.length === 1 ? 'it has' : 'they have'} no https address (baseURL) in OpenCode's settings: ${setup.skipped.join(', ')}.`
+      : '';
+    if (!setup.zen) {
+      const names = setup.providers.map((p) => p.name);
+      return names.length > 0
+        ? {
+            ok: true,
+            status: null,
+            message: `OpenCode on agentbox has ${names.join(', ')}. OpenCode on your computers gets ${names.length === 1 ? 'it' : 'them'} the next time it starts, plus OpenCode's free models.${skipped}`,
+          }
+        : {
+            ok: true,
+            status: null,
+            message: `OpenCode on agentbox has no models of your own yet, so your computers get OpenCode's free models. Add a provider in OpenCode's settings in a terminal here.${skipped}`,
+          };
+    }
     try {
       secret = (await s.terminals.client.request<TermdOpencodeKey>({ op: 'opencode.key' })).key;
     } catch (err) {

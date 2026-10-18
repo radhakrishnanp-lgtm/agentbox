@@ -240,7 +240,7 @@ describe('AI key presets', () => {
       expect(aiKeyCreateSchema.shape.name.safeParse(name).success, `${p.id}: ${name}`).toBe(true);
     }
     expect(presetKeyName(PROVIDER_PRESETS.find((p) => p.id === 'opencode-login')!)).toBe(
-      'OpenCode Zen/Go login',
+      'OpenCode from your Terminals',
     );
   });
 });

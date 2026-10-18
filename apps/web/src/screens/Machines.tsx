@@ -1553,8 +1553,8 @@ function AddKey({
           </p>
         ) : preset?.id === 'opencode-login' ? (
           <p className="text-sm text-muted">
-            Machines get an opencode command that uses this login, with OpenCode Zen and Go models.
-            The other CLIs never use it.
+            Machines get an opencode command with the models you set up in OpenCode on agentbox, and
+            OpenCode Zen and Go if you signed in. The other CLIs never use it.
           </p>
         ) : (
           <p className="text-sm text-muted">

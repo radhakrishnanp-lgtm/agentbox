@@ -6,9 +6,12 @@
  *
  * Subscription logins (Claude Pro/Max, ChatGPT, SuperGrok) are left out on
  * purpose: their providers allow them only in their own apps. OpenCode's own
- * Zen/Go key (the "OpenCode login from your Terminals") is the exception: it is
- * OpenCode's own service, and it is wired into OpenCode only.
+ * Zen/Go key (the "OpenCode from your Terminals" key) is the exception: it is
+ * OpenCode's own service, and it is wired into OpenCode only. The same key also
+ * brings the providers you set up in OpenCode on agentbox itself: machines get
+ * their models, and their requests go through the gateway, which adds the key.
  */
+import type { TermdOpencodeSetup } from '@agentbox/shared/termd';
 import type { AiKeyRow } from './store.ts';
 
 /** OpenCode replaces this with the pass file's contents. The setup script puts the file there. */
@@ -18,7 +21,7 @@ interface Provider {
   name?: string;
   npm?: string;
   options: { baseURL: string; apiKey: string; headers: Record<string, string> };
-  models?: Record<string, { name: string }>;
+  models?: Record<string, unknown>;
 }
 
 export interface OpencodeConfig {
@@ -67,26 +70,52 @@ const OPENCODE_SERVICES = [
   { id: 'opencode-go', path: '/go/v1' },
 ] as const;
 
-/** The machine's OpenCode settings: its keys that work with OpenCode, and OpenCode's free models. */
+/** Where a provider set up in OpenCode on agentbox is, under the key's gateway address. */
+export const OPENCODE_PROVIDER_PATH = '/p/';
+
+/**
+ * The machine's OpenCode settings: its keys that work with OpenCode, and OpenCode's
+ * free models. `setup` is what OpenCode on agentbox has (null when the vault is
+ * locked: then Zen and Go go through the gateway, which explains the lock).
+ */
 export function opencodeConfig(
   keys: readonly AiKeyRow[],
   gatewayUrl: (slug: string) => string,
+  setup: TermdOpencodeSetup | null = null,
 ): OpencodeConfig {
   const provider: Record<string, Provider> = {};
   let model: string | undefined;
   for (const k of keys) {
     if (k.auth === 'opencode-login') {
+      const headers = { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' };
       // OpenCode's built-in providers: their model lists come with OpenCode.
-      for (const service of OPENCODE_SERVICES) {
-        if (service.id in provider) continue;
-        provider[service.id] = {
+      // Without a Zen/Go login on agentbox, the free models go direct instead.
+      if (!setup || setup.zen) {
+        for (const service of OPENCODE_SERVICES) {
+          if (service.id in provider) continue;
+          provider[service.id] = {
+            options: {
+              baseURL: `${gatewayUrl(k.slug)}${service.path}`,
+              apiKey: OPENCODE_PASS,
+              headers,
+            },
+          };
+        }
+      }
+      for (const p of setup?.providers ?? []) {
+        if (p.id in provider) continue;
+        provider[p.id] = {
+          name: p.name,
+          ...(p.npm ? { npm: p.npm } : {}),
           options: {
-            baseURL: `${gatewayUrl(k.slug)}${service.path}`,
+            baseURL: `${gatewayUrl(k.slug)}${OPENCODE_PROVIDER_PATH}${p.id}`,
             apiKey: OPENCODE_PASS,
-            headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+            headers,
           },
+          models: p.models,
         };
       }
+      if (model === undefined && setup?.model) model = setup.model;
       continue;
     }
     const route = ROUTES[k.preset];

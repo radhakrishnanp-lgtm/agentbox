@@ -1705,7 +1705,11 @@ describe('OpenCode login for OpenCode', () => {
     const { pass } = await addMachine([key.id]);
     const ask = vi
       .spyOn(h.services.terminals.client, 'request')
-      .mockResolvedValue({ key: ZEN, provider: 'opencode' });
+      .mockImplementation(async (req) =>
+        req.op === 'opencode.setup'
+          ? { zen: 'opencode', providers: [], model: null, skipped: [] }
+          : { key: ZEN, provider: 'opencode' },
+      );
 
     const bearer = await gw({
       url: '/gw/opencode/v1/chat/completions',
@@ -1765,6 +1769,107 @@ describe('OpenCode login for OpenCode', () => {
     });
     expect(config.provider['opencode-go']?.options.baseURL).toBe(`${ORIGIN}/gw/opencode/go/v1`);
     expect(res.body).not.toContain(ZEN);
+  });
+
+  it('gives machines the providers you set up in OpenCode on agentbox, keys kept on the server', async () => {
+    const key = await loginKey();
+    const { pass } = await addMachine([key.id]);
+    const MINE = 'sk-my-own-provider-key';
+    const ask = vi.spyOn(h.services.terminals.client, 'request').mockImplementation(async (req) => {
+      if (req.op === 'opencode.setup') {
+        return {
+          zen: null,
+          providers: [
+            {
+              id: 'mine',
+              name: 'My models',
+              npm: '@ai-sdk/openai-compatible',
+              models: { 'glm-5.3-flash': { name: 'GLM 5.3 Flash' } },
+            },
+          ],
+          model: 'mine/glm-5.3-flash',
+          skipped: [],
+        };
+      }
+      if (req.op === 'opencode.provider' && req.id === 'mine') {
+        return { baseURL: `${provider.url}/coding/v1`, key: MINE, headers: { 'X-Extra': 'yes' } };
+      }
+      throw new Error(`unexpected ${req.op}`);
+    });
+
+    const res = await gw({
+      method: 'GET',
+      url: '/gw/_opencode',
+      headers: { authorization: `Bearer ${pass}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const config = res.json<{
+      provider: Record<string, unknown>;
+      enabled_providers: string[];
+      model?: string;
+    }>();
+    // No Zen login: OpenCode's free models go direct, so "opencode" is left as it is.
+    expect(config.enabled_providers).toEqual(['mine', 'opencode']);
+    expect(config.provider).toEqual({
+      mine: {
+        name: 'My models',
+        npm: '@ai-sdk/openai-compatible',
+        options: {
+          baseURL: `${ORIGIN}/gw/opencode/p/mine`,
+          apiKey: '{file:pass}',
+          headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+        },
+        models: { 'glm-5.3-flash': { name: 'GLM 5.3 Flash' } },
+      },
+    });
+    expect(config.model).toBe('mine/glm-5.3-flash');
+    expect(res.body).not.toContain(MINE);
+
+    // Test says what your computers get, without asking any provider.
+    await h.reauth(laptop);
+    const tested = await laptop.post(`/api/gateway/keys/${key.id}/test`);
+    expect(tested.json()).toMatchObject({ ok: true, status: null });
+    expect(tested.json().message).toMatch(/OpenCode on agentbox has My models/);
+
+    const chat = await gw({
+      url: '/gw/opencode/p/mine/chat/completions',
+      headers: { authorization: `Bearer ${pass}` },
+      payload: { model: 'glm-5.3-flash', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(chat.statusCode, chat.body).toBe(200);
+    expect(ask).toHaveBeenCalledWith({ op: 'opencode.provider', id: 'mine' });
+    const seen = provider.last();
+    expect(seen.url).toBe('/coding/v1/chat/completions');
+    expect(seen.headers.authorization).toBe(`Bearer ${MINE}`);
+    expect(seen.headers['x-extra']).toBe('yes');
+    expect(JSON.stringify(seen.headers)).not.toContain(pass);
+
+    // A provider that needs no key gets none, and never the machine's pass.
+    ask.mockImplementation(async () => ({
+      baseURL: `${provider.url}/v1`,
+      key: null,
+      headers: {},
+    }));
+    const local = await gw({
+      url: '/gw/opencode/p/mine/chat/completions',
+      headers: { authorization: `Bearer ${pass}` },
+      payload: { model: 'm', messages: [] },
+    });
+    expect(local.statusCode, local.body).toBe(200);
+    expect(provider.last().url).toBe('/v1/chat/completions');
+    expect(provider.last().headers.authorization).toBeUndefined();
+    expect(JSON.stringify(provider.last().headers)).not.toContain(pass);
+
+    // The vault locked: machines keep OpenCode's free models and are told why the rest is gone.
+    const { TermdRefused } = await import('../src/terminals/client.ts');
+    ask.mockRejectedValue(new TermdRefused('vault_locked', 'Unlock the vault first.'));
+    const lockedChat = await gw({
+      url: '/gw/opencode/p/mine/chat/completions',
+      headers: { authorization: `Bearer ${pass}` },
+      payload: { model: 'm', messages: [] },
+    });
+    expect(lockedChat.statusCode).toBe(403);
+    expect(lockedChat.json().error.message).toMatch(/vault on agentbox is locked/);
   });
 
   it('says clearly when OpenCode has no Zen key or the vault is locked', async () => {
