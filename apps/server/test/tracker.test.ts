@@ -484,6 +484,64 @@ describe('agent tracker', () => {
   const send = (method: 'PUT' | 'PATCH', url: string, payload: Record<string, unknown>) =>
     laptop.request({ method, url, payload });
 
+  it('records your own OpenAI-compatible model, as OpenCode calls it', async () => {
+    await h.reauth(laptop);
+    const key = await laptop.post('/api/gateway/keys', {
+      preset: 'openai-compatible',
+      name: 'My GLM',
+      slug: 'my-model',
+      secret: 'sk-my-provider-key-0000',
+      upstream: `${provider.url}/v1`,
+      model: 'glm-5.3-flash',
+      modelSettings: { context: 128000, images: true, reasoning: 'medium', temperature: 0.2 },
+    });
+    expect(key.statusCode, key.body).toBe(200);
+    const created = await laptop.post('/api/gateway/machines', {
+      name: 'laptop',
+      keyIds: [key.json<AiKeySummary>().id],
+      dailyTokenLimit: null,
+    });
+    const { pass } = created.json<MachineCreated>();
+    await h.reauth(laptop);
+    await send('PUT', '/api/tracker', { enabled: true });
+
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/gw/my-model/chat/completions',
+      headers: {
+        host: RP_ID,
+        'x-forwarded-for': '198.51.100.50',
+        'x-forwarded-proto': 'https',
+        'content-type': 'application/json',
+        authorization: `Bearer ${pass}`,
+      },
+      payload: JSON.stringify({
+        model: 'glm-5.3-flash',
+        temperature: 0.2,
+        reasoning_effort: 'medium',
+        messages: [{ role: 'user', content: 'fix the login bug' }],
+      }),
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const seen = provider.seen.at(-1)!;
+    expect(seen.url).toBe('/v1/chat/completions');
+    expect(seen.headers.authorization).toBe('Bearer sk-my-provider-key-0000');
+
+    const page = (await laptop.get('/api/tracker/entries')).json<TracePage>();
+    expect(page.entries).toHaveLength(1);
+    expect(page.entries[0]).toMatchObject({
+      keySlug: 'my-model',
+      model: 'glm-5.3-flash',
+      preview: 'fix the login bug',
+      inputTokens: 20,
+      outputTokens: 4,
+    });
+    const entry = (
+      await laptop.get(`/api/tracker/entries/${page.entries[0]!.id}`)
+    ).json<TraceEntry>();
+    expect(JSON.stringify(entry.steps)).toContain('hi');
+  });
+
   it('is off by default and saves nothing until you turn it on', async () => {
     const pass = await machine();
     expect((await laptop.get('/api/tracker')).json<TrackerStatus>()).toMatchObject({

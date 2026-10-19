@@ -51,6 +51,8 @@ export interface ProviderPreset {
   defaultModel?: string;
   /** Shown as a warning when the preset is picked. */
   note?: string;
+  /** The form asks for the model's context window, images, reasoning and temperature. */
+  modelSettings?: boolean;
   /** Nothing to paste: the login comes from somewhere else on agentbox. */
   noSecret?: boolean;
   /** Name filled in for a new key, when the label is too long for one. */
@@ -190,6 +192,18 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     help: 'openrouter.ai → Keys.',
   },
   {
+    id: 'openai-compatible',
+    label: 'OpenAI Compatible (any provider, for OpenCode)',
+    keyName: 'OpenAI Compatible',
+    upstream: '',
+    auth: 'bearer',
+    cli: null,
+    slug: 'my-model',
+    help: "The provider's base URL, like https://api.example.com/v1 (/chat/completions is added on its own), its API key and the model ID. OpenCode on your computers gets it as a model of its own.",
+    needsModel: true,
+    modelSettings: true,
+  },
+  {
     id: 'custom',
     label: 'Other provider',
     upstream: '',
@@ -248,6 +262,20 @@ export const ipRuleSchema = z.union([z.ipv4(), z.ipv6(), z.cidrv4(), z.cidrv6()]
 /** An optional note for an allowed address, e.g. "office" or "home". */
 export const ipLabelSchema = z.string().trim().max(GATEWAY_LIMITS.ipLabelMax);
 
+export const REASONING_EFFORTS = ['low', 'medium', 'high'] as const;
+
+/** How OpenCode should treat a key's model. Each one is optional. */
+export const modelSettingsSchema = z.object({
+  /** Context window, in tokens. */
+  context: z.number().int().min(1000).max(10_000_000).optional(),
+  /** Longest answer, in tokens. */
+  output: z.number().int().min(1).max(1_000_000).optional(),
+  images: z.boolean().optional(),
+  reasoning: z.enum(REASONING_EFFORTS).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+});
+export type ModelSettings = z.infer<typeof modelSettingsSchema>;
+
 export const aiKeyCreateSchema = z.object({
   preset: z.string().min(1).max(40),
   name: displayNameSchema(GATEWAY_LIMITS.keyNameMax),
@@ -265,6 +293,7 @@ export const aiKeyCreateSchema = z.object({
     .regex(/^[A-Za-z0-9._:/-]{1,100}$/, 'Use the model name exactly as the provider writes it')
     .optional()
     .or(z.literal('').transform(() => undefined)),
+  modelSettings: modelSettingsSchema.optional(),
 });
 export type AiKeyCreate = z.infer<typeof aiKeyCreateSchema>;
 
@@ -419,6 +448,7 @@ export interface AiKeySummary {
   auth: KeyAuthStyle;
   cli: GatewayCli | null;
   model: string | null;
+  modelSettings: ModelSettings | null;
   /** Last 4 characters only, so you can tell keys apart. */
   hint: string;
   gatewayUrl: string;

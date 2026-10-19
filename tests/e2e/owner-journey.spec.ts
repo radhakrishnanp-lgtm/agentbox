@@ -293,6 +293,15 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
     .click();
   await expect(page.getByRole('heading', { name: 'Machines', level: 1 })).toBeVisible();
   await page.getByRole('button', { name: 'Add' }).nth(1).click(); // AI keys → Add
+  // Your own model for OpenCode: base URL, key, model and its settings.
+  await page.getByLabel('Provider', { exact: true }).selectOption('openai-compatible');
+  await expect(page.getByLabel('Base URL')).toBeVisible();
+  await expect(page.getByLabel('Model', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Context window')).toHaveValue('128000');
+  await page.getByLabel('Reasoning effort').selectOption('medium');
+  await page.getByLabel('Supports images').check();
+  await shot(page, 'ai-key-openai-compatible');
+  await page.getByLabel('Provider', { exact: true }).selectOption({ index: 0 });
   await page.getByLabel('Key', { exact: true }).fill(REAL_KEY);
   await page.getByLabel('Provider address').fill(provider.url);
   await page.getByRole('button', { name: 'Save key' }).click();

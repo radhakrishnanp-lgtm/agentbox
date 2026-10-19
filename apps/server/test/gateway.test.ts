@@ -314,6 +314,69 @@ describe('machines', () => {
     expect(free.json()).toMatchObject({ provider: {}, enabled_providers: ['opencode'] });
     expect((await get('abx_' + 'x'.repeat(43))).statusCode).toBe(401);
 
+    // "OpenAI Compatible": its own provider, with the model settings you gave it.
+    const compatible = await addKey({
+      preset: 'openai-compatible',
+      slug: 'my-glm',
+      name: 'My GLM',
+      upstream: 'https://glm.example.com/v1',
+      model: 'glm-5.3-flash',
+      modelSettings: { context: 200000, images: true, reasoning: 'high', temperature: 0.2 },
+    });
+    expect(compatible.modelSettings).toEqual({
+      context: 200000,
+      images: true,
+      reasoning: 'high',
+      temperature: 0.2,
+    });
+    const glm = (await get((await addMachine([compatible.id], { name: 'glm' })).pass)).json<{
+      provider: Record<string, unknown>;
+      model: string;
+    }>();
+    expect(glm.provider['agentbox-my-glm']).toEqual({
+      name: 'My GLM (agentbox)',
+      npm: '@ai-sdk/openai-compatible',
+      options: {
+        baseURL: `${ORIGIN}/gw/my-glm`,
+        apiKey: '{file:pass}',
+        headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+        includeUsage: true,
+      },
+      models: {
+        'glm-5.3-flash': {
+          name: 'glm-5.3-flash',
+          limit: { context: 200000, output: 8192 },
+          attachment: true,
+          modalities: { input: ['text', 'image'], output: ['text'] },
+          reasoning: true,
+          temperature: true,
+          options: { reasoningEffort: 'high', temperature: 0.2 },
+        },
+      },
+    });
+    expect(glm.model).toBe('agentbox-my-glm/glm-5.3-flash');
+    // A model is required, and settings outside OpenCode's ranges are refused.
+    await h.reauth(laptop);
+    const noModel = await laptop.post('/api/gateway/keys', {
+      preset: 'openai-compatible',
+      name: 'x',
+      slug: 'x-glm',
+      secret: REAL_KEY,
+      upstream: 'https://glm.example.com/v1',
+    });
+    expect(noModel.statusCode).toBe(400);
+    await h.reauth(laptop);
+    const hot = await laptop.post('/api/gateway/keys', {
+      preset: 'openai-compatible',
+      name: 'x',
+      slug: 'x-glm',
+      secret: REAL_KEY,
+      upstream: 'https://glm.example.com/v1',
+      model: 'glm',
+      modelSettings: { temperature: 5 },
+    });
+    expect(hot.statusCode).toBe(400);
+
     // "Other provider" with a model: an OpenAI-compatible provider at its address.
     const own = await addKey({
       preset: 'custom',
@@ -1844,6 +1907,7 @@ describe('OpenCode login for OpenCode', () => {
           baseURL: `${ORIGIN}/gw/opencode/p/mine`,
           apiKey: '{file:pass}',
           headers: { 'X-Agentbox-Computer': '{env:AGENTBOX_COMPUTER}' },
+          includeUsage: true,
         },
         models: { 'glm-5.3-flash': { name: 'GLM 5.3 Flash' } },
       },

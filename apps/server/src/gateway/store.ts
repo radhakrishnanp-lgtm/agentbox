@@ -98,6 +98,7 @@ export class GatewayStore {
       auth: k.auth,
       cli: k.cli,
       model: k.model,
+      modelSettings: k.modelSettings ?? null,
       hint: k.hint,
       gatewayUrl: this.gatewayUrl(k.slug),
       createdAt: iso(k.createdAt),
@@ -165,6 +166,14 @@ export class GatewayStore {
       auth,
       cli,
       model,
+      // Only for a model OpenCode gets as its own.
+      modelSettings:
+        preset.modelSettings &&
+        model &&
+        input.modelSettings &&
+        Object.keys(input.modelSettings).length
+          ? input.modelSettings
+          : null,
       secretEnc: this.#box.encrypt(secret, `ai_key:${id}`),
       hint: preset.noSecret ? 'VPS login' : secret.slice(-4),
       lastUsedAt: null,

@@ -198,19 +198,20 @@ Requests go to `https://api.kimi.com/coding` and count against your Kimi Code pl
 
 [OpenCode](https://opencode.ai) talks to many providers, so it gets all of the machine's keys at once. Type `opencode` and pick a model with `/models`; the first key with a model set is the default.
 
-| Key in agentbox                    | In OpenCode                                                                              |
-| ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| Anthropic API key                  | the Anthropic provider                                                                   |
-| OpenAI API key                     | the OpenAI provider                                                                      |
-| xAI API key                        | the xAI provider                                                                         |
-| Google Gemini API key              | the Google provider                                                                      |
-| OpenRouter API key                 | the OpenRouter provider                                                                  |
-| Moonshot or Kimi Code key          | its own provider, named after the key; needs a model                                     |
-| Moonshot key used from Claude Code | its own Anthropic-style provider; needs a model                                          |
-| Your OpenCode setup                | the providers and models you set up in OpenCode on agentbox, and Zen/Go if you signed in |
-| Other provider, with a model       | its own OpenAI-compatible provider at that address                                       |
-| (none needed)                      | OpenCode's free models, straight from opencode.ai                                        |
-| Claude Pro/Max, ChatGPT, SuperGrok | **not used:** those logins are allowed only in their apps                                |
+| Key in agentbox                    | In OpenCode                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------- |
+| Anthropic API key                  | the Anthropic provider                                                                      |
+| OpenAI API key                     | the OpenAI provider                                                                         |
+| xAI API key                        | the xAI provider                                                                            |
+| Google Gemini API key              | the Google provider                                                                         |
+| OpenRouter API key                 | the OpenRouter provider                                                                     |
+| Moonshot or Kimi Code key          | its own provider, named after the key; needs a model                                        |
+| Moonshot key used from Claude Code | its own Anthropic-style provider; needs a model                                             |
+| Your OpenCode setup                | the providers and models you set up in OpenCode on agentbox, and Zen/Go if you signed in    |
+| OpenAI Compatible                  | its own provider with your model and its settings (context, images, reasoning, temperature) |
+| Other provider, with a model       | its own OpenAI-compatible provider at that address                                          |
+| (none needed)                      | OpenCode's free models, straight from opencode.ai                                           |
+| Claude Pro/Max, ChatGPT, SuperGrok | **not used:** those logins are allowed only in their apps                                   |
 
 **Your OpenCode setup, from OpenCode on agentbox.** Set up OpenCode once in an agentbox terminal, the way you would on your own computer: add your own providers and models to its settings (`~/.config/opencode/opencode.json`), and if you like sign in to OpenCode Zen or Go with `opencode auth login`. Then in **Machines → AI keys**, add **Your OpenCode setup from your Terminals** (nothing to paste) and tick it on the machine. `opencode` on that computer now lists the same models, and starts with the model you chose on agentbox. Change a model on agentbox and each computer's `opencode` picks it up the next time it starts (on Windows, after `agentbox-machine refresh`). **Test** on the key lists what your computers get.
 
@@ -223,7 +224,7 @@ The keys stay on the server: computers get each provider's name and models, neve
 
 A project's own `opencode.json` on agentbox isn't shared, only your settings in `~/.config/opencode`.
 
-**One more model without OpenCode on agentbox** (any OpenAI-compatible API): in **Machines → AI keys**, add **Other provider** with the provider's base URL exactly as OpenCode uses it (usually ending in `/v1`), its key and the model name. Tick it on the machine and run `agentbox-machine refresh`; it shows up in `/models`.
+**Your own model, added in agentbox** (any OpenAI-compatible API): in **Machines → AI keys**, add **OpenAI Compatible** with the provider's base URL (usually ending in `/v1`; `/chat/completions` is added on its own), its API key and the model ID. You can also set the model's context window, longest answer, temperature, reasoning effort and whether it takes images; OpenCode uses them as if you had set them in its own settings. Tick the key on the machine and run `agentbox-machine refresh`; the model shows up in `/models` and is the default. Add one key per model; any number of them can be on a machine. Requests go through agentbox like any other key, so they show up in Logs with their tokens (agentbox asks OpenCode to report them), and **Agent tracker** records them when it's on. **Other provider** with a model still works the same way, without the settings.
 
 **Free models** work on every machine without a key or login, as in OpenCode itself. They go from the computer to opencode.ai directly, not through agentbox, because no key of yours is involved; so they don't show up in Logs and Stop doesn't cut them off. With your OpenCode setup on the machine and a Zen/Go login on agentbox, all Zen models go through agentbox instead.
 
