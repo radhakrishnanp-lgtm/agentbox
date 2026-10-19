@@ -17,6 +17,7 @@ import {
   scheduleOpen,
   scheduleText,
   type AiKeyCreate,
+  type AiKeyUpdate,
   type MachineSchedule,
   type GatewayLogs,
   type LogsPeriod,
@@ -191,6 +192,79 @@ export class GatewayStore {
       details: { name: row.name, slug: row.slug, preset: row.preset, upstream },
     });
     return this.keySummary(row);
+  }
+
+  updateKey(id: string, patch: AiKeyUpdate, actor: string, ip: string): AiKeySummary {
+    const k = this.activeKeys().find((x) => x.id === id);
+    if (!k) throw new AppError('not_found', 'That key was not found.');
+    const preset = PROVIDER_PRESETS.find((p) => p.id === k.preset);
+    const now = this.#clock.now();
+    const set: Partial<AiKeyRow> = { updatedAt: now };
+    const changed: string[] = [];
+    if (patch.name !== undefined && patch.name !== k.name) {
+      set.name = patch.name;
+      changed.push('name');
+    }
+    if (preset?.noSecret) {
+      if (patch.secret || (patch.upstream !== undefined && patch.upstream !== k.upstream)) {
+        throw new AppError(
+          'bad_request',
+          'This one uses the login in your vault: nothing to change there.',
+        );
+      }
+    } else {
+      if (patch.secret) {
+        if (patch.secret.length < 8) throw new AppError('bad_request', 'Paste the whole key.');
+        if (/\s/.test(patch.secret)) {
+          throw new AppError(
+            'bad_request',
+            'The key has a space or line break in it. Paste it again.',
+          );
+        }
+        set.secretEnc = this.#box.encrypt(patch.secret, `ai_key:${k.id}`);
+        set.hint = patch.secret.slice(-4);
+        changed.push('key');
+      }
+      if (patch.upstream !== undefined && patch.upstream !== k.upstream) {
+        set.upstream = checkUpstream(patch.upstream, this.#config);
+        changed.push('address');
+      }
+    }
+    if (patch.model !== undefined) {
+      const model = patch.model || null;
+      if (preset?.needsModel && !model) {
+        throw new AppError(
+          'bad_request',
+          'This provider needs a model name. Copy it from their docs.',
+        );
+      }
+      if (model !== k.model) {
+        set.model = model;
+        changed.push('model');
+      }
+    }
+    const model = set.model === undefined ? k.model : set.model;
+    let settings = k.modelSettings ?? null;
+    if (patch.modelSettings !== undefined) {
+      settings =
+        patch.modelSettings && Object.keys(patch.modelSettings).length ? patch.modelSettings : null;
+    }
+    // Only for a model OpenCode gets as its own.
+    if (!preset?.modelSettings || !model) settings = null;
+    if (JSON.stringify(settings) !== JSON.stringify(k.modelSettings ?? null)) {
+      set.modelSettings = settings;
+      changed.push('model settings');
+    }
+    this.#db.update(aiKey).set(set).where(eq(aiKey.id, k.id)).run();
+    this.#audit.record({
+      actor,
+      action: 'ai_key.updated',
+      targetType: 'ai_key',
+      targetId: k.id,
+      ip,
+      details: { name: set.name ?? k.name, changed },
+    });
+    return this.keySummary({ ...k, ...set });
   }
 
   removeKey(id: string, actor: string, ip: string): void {

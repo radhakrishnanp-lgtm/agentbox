@@ -9,6 +9,7 @@ import { z } from 'zod';
 import {
   PROVIDER_PRESETS,
   aiKeyCreateSchema,
+  aiKeyUpdateSchema,
   machineCreateSchema,
   machineUpdateSchema,
   type GatewayLogs,
@@ -73,6 +74,17 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
         });
         return result;
       },
+    );
+
+    app.patch(
+      '/api/gateway/keys/:id',
+      {
+        schema: { params: z.object({ id: z.uuid() }), body: aiKeyUpdateSchema },
+        preHandler: requireFreshAuth,
+        config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+      },
+      async (request) =>
+        s.gateway.updateKey(request.params.id, request.body, actor(request), request.ip),
     );
 
     app.delete(
