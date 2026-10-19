@@ -32,7 +32,14 @@ import {
   XCircle,
   Trash2,
 } from 'lucide-react';
-import { useId, useState, type KeyboardEvent, type ReactNode, type SyntheticEvent } from 'react';
+import {
+  useId,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+  type SyntheticEvent,
+} from 'react';
 import { toast } from 'sonner';
 import { PageHeader } from '../components/Layout.tsx';
 import { Button } from '../components/ui/button.tsx';
@@ -1476,6 +1483,8 @@ function AddKey({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [tested, setTested] = useState<KeyCheckResult | null>(null);
 
   const pick = (id: string) => {
     const p = presets.find((x) => x.id === id);
@@ -1489,6 +1498,44 @@ function AddKey({
   };
   // The model is asked for when a CLI or OpenCode uses it.
   const asksModel = !!preset && (!!preset.cli || !!preset.needsModel || preset.id === 'custom');
+
+  // Test before Save: the provider is asked with what the form has now.
+  const test = () => {
+    const draft = aiKeyCreateSchema.safeParse({
+      preset: presetId,
+      name,
+      slug,
+      secret: preset?.noSecret ? '' : secret,
+      upstream,
+      model,
+      ...(preset?.modelSettings ? { modelSettings: modelSettingsOf(settings) } : {}),
+    });
+    if (!draft.success) {
+      const issue = draft.error.issues[0];
+      setError(
+        issue ? `${String(issue.path.at(-1) ?? 'form')}: ${issue.message}` : 'Check the form',
+      );
+      return;
+    }
+    setTesting(true);
+    setTested(null);
+    setError(null);
+    withFreshAuth(
+      () =>
+        post<KeyCheckResult>('/api/gateway/keys/test', {
+          ...draft.data,
+          ...(editing ? { id: editing.id } : {}),
+        }),
+      setSession,
+    )
+      .then(setTested)
+      .catch((err: unknown) => {
+        setTested({ ok: false, status: null, message: errorMessage(err) });
+      })
+      .finally(() => {
+        setTesting(false);
+      });
+  };
 
   const submit = (e: SyntheticEvent) => {
     e.preventDefault();
@@ -1586,8 +1633,14 @@ function AddKey({
         {preset?.noSecret ? null : (
           <Field
             label="Key"
-            type="password"
+            // Not type="password": browsers fill in your agentbox password there.
+            type="text"
+            name="ai-provider-key"
             autoComplete="off"
+            data-1p-ignore
+            data-lpignore="true"
+            data-bwignore
+            style={{ WebkitTextSecurity: 'disc' } as CSSProperties}
             spellCheck={false}
             placeholder={
               editing
@@ -1629,7 +1682,7 @@ function AddKey({
             placeholder={preset?.modelSettings ? 'https://api.example.com/v1' : undefined}
             hint={
               preset?.modelSettings
-                ? '/chat/completions is added on its own, so give only the base URL, usually ending in /v1.'
+                ? '/chat/completions is added on its own, so give only the base URL, usually ending in /v1. Without a path, agentbox adds /v1.'
                 : preset?.id === 'custom'
                   ? 'The API base address, starting with https://'
                   : 'Only change this if your provider told you to use a different address.'
@@ -1687,9 +1740,29 @@ function AddKey({
             {error}
           </p>
         ) : null}
-        <div className="flex gap-2">
+        {tested ? (
+          <p
+            className={cn(
+              'flex items-start gap-1.5 text-sm',
+              tested.ok ? 'text-success' : 'text-danger',
+            )}
+            role="status"
+          >
+            {tested.ok ? (
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
+            ) : (
+              <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+            )}
+            {tested.message}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
           <Button type="submit" loading={busy}>
             {editing ? 'Save changes' : 'Save key'}
+          </Button>
+          <Button variant="secondary" onClick={test} disabled={testing || busy}>
+            <Stethoscope className="size-4" aria-hidden />
+            {testing ? 'Testing…' : 'Test before saving'}
           </Button>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
             Cancel

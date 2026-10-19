@@ -48,6 +48,36 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
       async (request) => s.gateway.addKey(request.body, actor(request), request.ip),
     );
 
+    // Test before Save: the key as the form has it, not saved. A fresh passkey
+    // check, because a saved key can be tried at an address typed in the form.
+    app.post(
+      '/api/gateway/keys/test',
+      {
+        schema: { body: aiKeyCreateSchema.extend({ id: z.uuid().optional() }) },
+        preHandler: requireFreshAuth,
+        config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+      },
+      async (request): Promise<KeyCheckResult> => {
+        const { id, ...input } = request.body;
+        const { row, secret } = s.gateway.draftKey(input, id);
+        const result = await checkKey(s, row, secret);
+        s.audit.record({
+          actor: actor(request),
+          action: 'ai_key.tested',
+          targetType: 'ai_key',
+          targetId: id ?? null,
+          ip: request.ip,
+          details: {
+            name: row.name,
+            unsaved: true,
+            ok: result.ok,
+            ...(result.status ? { status: result.status } : {}),
+          },
+        });
+        return result;
+      },
+    );
+
     // "Test": agentbox asks the provider one small question with this key.
     app.post(
       '/api/gateway/keys/:id/test',
