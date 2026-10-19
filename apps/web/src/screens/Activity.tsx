@@ -26,6 +26,7 @@ const LABELS: Record<string, string> = {
   'password.set': 'Sign-in password set',
   'password.removed': 'Sign-in password removed',
   'ai_key.added': 'AI key added',
+  'ai_key.updated': 'AI key changed',
   'ai_key.removed': 'AI key removed',
   'ai_key.tested': 'AI key tested',
   'tracker.enabled': 'Agent tracker turned on',

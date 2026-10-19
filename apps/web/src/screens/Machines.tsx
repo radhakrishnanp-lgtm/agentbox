@@ -1,6 +1,7 @@
 import {
   GATEWAY_LIMITS,
   aiKeyCreateSchema,
+  aiKeyUpdateSchema,
   ipRuleSchema,
   machineCreateSchema,
   machineUpdateSchema,
@@ -13,6 +14,7 @@ import {
   type MachineCreated,
   type MachineSchedule,
   type MachineSummary,
+  type ModelSettings,
   type ProviderPreset,
 } from '@agentbox/shared';
 import {
@@ -1297,6 +1299,7 @@ function KeyList({ data, onChange }: { data: GatewayOverview | null; onChange: (
               key={k.id}
               aiKey={k}
               preset={data.presets.find((p) => p.id === k.preset)}
+              presets={data.presets}
               onRemoved={onChange}
             />
           ))}
@@ -1309,13 +1312,16 @@ function KeyList({ data, onChange }: { data: GatewayOverview | null; onChange: (
 function KeyRow({
   aiKey: k,
   preset,
+  presets,
   onRemoved,
 }: {
   aiKey: AiKeySummary;
   preset: ProviderPreset | undefined;
+  presets: readonly ProviderPreset[];
   onRemoved: () => void;
 }) {
   const { setSession } = useAuth();
+  const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -1348,6 +1354,24 @@ function KeyRow({
         setBusy(false);
       });
   };
+  if (editing) {
+    return (
+      <li>
+        <AddKey
+          presets={presets}
+          taken={[]}
+          editing={k}
+          onCancel={() => {
+            setEditing(false);
+          }}
+          onDone={() => {
+            setEditing(false);
+            onRemoved();
+          }}
+        />
+      </li>
+    );
+  }
   return (
     <li className="flex items-start gap-3 px-5 py-4">
       <div className="min-w-0 flex-1 space-y-1">
@@ -1388,6 +1412,16 @@ function KeyRow({
       </Button>
       <Button
         variant="ghost"
+        aria-label={`Edit key ${k.name}`}
+        onClick={() => {
+          setEditing(true);
+        }}
+      >
+        <Pencil className="size-4" aria-hidden />
+        Edit
+      </Button>
+      <Button
+        variant="ghost"
         className="text-danger"
         onClick={() => {
           setConfirming(true);
@@ -1409,19 +1443,22 @@ function KeyRow({
   );
 }
 
+/** Adds a key, or edits one (everything but its provider and its address name). */
 function AddKey({
   presets,
   taken,
+  editing,
   onDone,
   onCancel,
 }: {
   presets: readonly ProviderPreset[];
   taken: string[];
+  editing?: AiKeySummary;
   onDone: () => void;
   onCancel: () => void;
 }) {
   const { setSession } = useAuth();
-  const first = presets[0];
+  const first = editing ? presets.find((p) => p.id === editing.preset) : presets[0];
   const [presetId, setPresetId] = useState(first?.id ?? '');
   const preset = presets.find((p) => p.id === presetId);
   const freeSlug = (base: string) => {
@@ -1429,12 +1466,14 @@ function AddKey({
     for (let i = 2; taken.includes(slug); i++) slug = `${base}-${i}`;
     return slug;
   };
-  const [name, setName] = useState(first ? presetKeyName(first) : '');
-  const [slug, setSlug] = useState(freeSlug(first?.slug ?? 'key'));
-  const [upstream, setUpstream] = useState(first?.upstream ?? '');
+  const [name, setName] = useState(editing?.name ?? (first ? presetKeyName(first) : ''));
+  const [slug, setSlug] = useState(editing?.slug ?? freeSlug(first?.slug ?? 'key'));
+  const [upstream, setUpstream] = useState(editing?.upstream ?? first?.upstream ?? '');
   const [secret, setSecret] = useState('');
-  const [model, setModel] = useState(first?.defaultModel ?? '');
-  const [settings, setSettings] = useState<ModelSettingsForm>(NO_MODEL_SETTINGS);
+  const [model, setModel] = useState(editing ? (editing.model ?? '') : (first?.defaultModel ?? ''));
+  const [settings, setSettings] = useState<ModelSettingsForm>(
+    editing?.modelSettings ? settingsForm(editing.modelSettings) : DEFAULT_MODEL_SETTINGS,
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1446,13 +1485,50 @@ function AddKey({
     setSlug(freeSlug(p.slug));
     setUpstream(p.upstream);
     setModel(p.defaultModel ?? '');
-    setSettings(NO_MODEL_SETTINGS);
+    setSettings(DEFAULT_MODEL_SETTINGS);
   };
   // The model is asked for when a CLI or OpenCode uses it.
   const asksModel = !!preset && (!!preset.cli || !!preset.needsModel || preset.id === 'custom');
 
   const submit = (e: SyntheticEvent) => {
     e.preventDefault();
+    if (editing) {
+      const changes = aiKeyUpdateSchema.safeParse({
+        name,
+        ...(preset?.noSecret ? {} : { upstream, ...(secret ? { secret } : {}) }),
+        ...(asksModel ? { model } : {}),
+        ...(preset?.modelSettings ? { modelSettings: modelSettingsOf(settings) } : {}),
+      });
+      if (!changes.success) {
+        const issue = changes.error.issues[0];
+        setError(
+          issue ? `${String(issue.path.at(-1) ?? 'form')}: ${issue.message}` : 'Check the form',
+        );
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      withFreshAuth(
+        () =>
+          api(`/api/gateway/keys/${encodeURIComponent(editing.id)}`, {
+            method: 'PATCH',
+            body: changes.data,
+          }),
+        setSession,
+      )
+        .then(() => {
+          setSecret('');
+          toast.success('Key saved. Run agentbox-machine refresh on computers that use it.');
+          onDone();
+        })
+        .catch((err: unknown) => {
+          setError(errorMessage(err));
+        })
+        .finally(() => {
+          setBusy(false);
+        });
+      return;
+    }
     const parsed = aiKeyCreateSchema.safeParse({
       preset: presetId,
       name,
@@ -1488,13 +1564,20 @@ function AddKey({
   return (
     <CardBody className="border-b border-border bg-surface-2/40">
       <form className="space-y-4" onSubmit={submit} noValidate autoComplete="off">
-        <Select label="Provider" value={presetId} onChange={pick} hint={preset?.help}>
-          {presets.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </Select>
+        {editing ? (
+          <p className="text-sm">
+            <span className="font-medium">{preset?.label ?? editing.preset}</span>
+            <span className="block text-muted">{preset?.help}</span>
+          </p>
+        ) : (
+          <Select label="Provider" value={presetId} onChange={pick} hint={preset?.help}>
+            {presets.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </Select>
+        )}
         {preset?.note ? (
           <Alert tone="warning" title={preset.experimental ? 'Experimental' : 'Good to know'}>
             {preset.note}
@@ -1506,7 +1589,11 @@ function AddKey({
             type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder="Paste the key"
+            placeholder={
+              editing
+                ? `Leave empty to keep the saved key (ends in ••••${editing.hint})`
+                : 'Paste the key'
+            }
             value={secret}
             onChange={(e) => {
               setSecret(e.target.value);
@@ -1524,7 +1611,12 @@ function AddKey({
           />
           <Field
             label="Short name in the address"
-            hint={`Machines call …/gw/${slug || '…'}`}
+            hint={
+              editing
+                ? `Machines call …/gw/${slug}. It can't change, because computers use it.`
+                : `Machines call …/gw/${slug || '…'}`
+            }
+            readOnly={!!editing}
             value={slug}
             onChange={(e) => {
               setSlug(e.target.value.toLowerCase());
@@ -1597,7 +1689,7 @@ function AddKey({
         ) : null}
         <div className="flex gap-2">
           <Button type="submit" loading={busy}>
-            Save key
+            {editing ? 'Save changes' : 'Save key'}
           </Button>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
             Cancel
@@ -1616,13 +1708,24 @@ interface ModelSettingsForm {
   temperature: string;
 }
 
-const NO_MODEL_SETTINGS: ModelSettingsForm = {
-  context: '128000',
+const DEFAULT_MODEL_SETTINGS: ModelSettingsForm = {
+  context: '1000000',
   output: '',
   images: false,
-  reasoning: '',
-  temperature: '',
+  reasoning: 'medium',
+  temperature: '0.2',
 };
+
+/** A key's saved settings, as the form shows them. */
+function settingsForm(s: ModelSettings): ModelSettingsForm {
+  return {
+    context: s.context === undefined ? '' : String(s.context),
+    output: s.output === undefined ? '' : String(s.output),
+    images: s.images ?? false,
+    reasoning: s.reasoning ?? '',
+    temperature: s.temperature === undefined ? '' : String(s.temperature),
+  };
+}
 
 /** The form's text boxes as numbers; empty boxes are left out. */
 function modelSettingsOf(f: ModelSettingsForm) {
@@ -1673,6 +1776,7 @@ function ModelSettingsFields({
           label="Temperature (optional)"
           inputMode="decimal"
           placeholder="0 to 2"
+          hint="Empty: the model's own default"
           value={value.temperature}
           onChange={(e) => {
             set({ temperature: e.target.value });
@@ -1688,7 +1792,7 @@ function ModelSettingsFields({
           }}
           hint="How much the model thinks before answering"
         >
-          <option value="">Off (the model's default)</option>
+          <option value="">Off (don't ask it to think)</option>
           {REASONING_EFFORTS.map((r) => (
             <option key={r} value={r}>
               {r[0]?.toUpperCase()}

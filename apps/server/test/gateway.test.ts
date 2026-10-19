@@ -377,6 +377,64 @@ describe('machines', () => {
     });
     expect(hot.statusCode).toBe(400);
 
+    // Edit: new model, settings and key; the address name stays.
+    await h.reauth(laptop);
+    const edited = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/keys/${compatible.id}`,
+      payload: {
+        name: 'GLM uncensored',
+        model: 'glm-5.3-flash-uncensored',
+        secret: 'sk-new-provider-key-9999',
+        modelSettings: { context: 1000000, temperature: 0.2, reasoning: 'medium' },
+      },
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json<AiKeySummary>()).toMatchObject({
+      name: 'GLM uncensored',
+      slug: 'my-glm',
+      model: 'glm-5.3-flash-uncensored',
+      hint: '9999',
+      modelSettings: { context: 1000000, temperature: 0.2, reasoning: 'medium' },
+    });
+    const row = h.services.gateway.activeKeys().find((k) => k.id === compatible.id)!;
+    expect(h.services.gateway.revealSecret(row)).toBe('sk-new-provider-key-9999');
+    const after = (await get((await addMachine([compatible.id], { name: 'glm-2' })).pass)).json<{
+      provider: Record<string, { models: Record<string, unknown> }>;
+    }>();
+    expect(after.provider['agentbox-my-glm']?.models).toEqual({
+      'glm-5.3-flash-uncensored': {
+        name: 'glm-5.3-flash-uncensored',
+        limit: { context: 1000000, output: 8192 },
+        reasoning: true,
+        temperature: true,
+        options: { reasoningEffort: 'medium', temperature: 0.2 },
+      },
+    });
+    // Leaving the key out keeps it; a model can't be cleared on a key that needs one.
+    await h.reauth(laptop);
+    const kept = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/keys/${compatible.id}`,
+      payload: { name: 'GLM' },
+    });
+    expect(kept.json<AiKeySummary>().hint).toBe('9999');
+    await h.reauth(laptop);
+    const cleared = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/keys/${compatible.id}`,
+      payload: { model: '' },
+    });
+    expect(cleared.statusCode).toBe(400);
+    // A vault login has no key or address to change.
+    await h.reauth(laptop);
+    const login = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/keys/${subs[1]!.id}`,
+      payload: { upstream: 'https://attacker.example' },
+    });
+    expect(login.statusCode).toBe(400);
+
     // "Other provider" with a model: an OpenAI-compatible provider at its address.
     const own = await addKey({
       preset: 'custom',

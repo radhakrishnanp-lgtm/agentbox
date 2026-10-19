@@ -297,7 +297,9 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await page.getByLabel('Provider', { exact: true }).selectOption('openai-compatible');
   await expect(page.getByLabel('Base URL')).toBeVisible();
   await expect(page.getByLabel('Model', { exact: true })).toBeVisible();
-  await expect(page.getByLabel('Context window')).toHaveValue('128000');
+  await expect(page.getByLabel('Context window')).toHaveValue('1000000');
+  await expect(page.getByLabel('Temperature (optional)')).toHaveValue('0.2');
+  await expect(page.getByLabel('Reasoning effort')).toHaveValue('medium');
   await page.getByLabel('Reasoning effort').selectOption('medium');
   await page.getByLabel('Supports images').check();
   await shot(page, 'ai-key-openai-compatible');
@@ -307,6 +309,14 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await page.getByRole('button', { name: 'Save key' }).click();
   await expect(page.getByText('ends in ••••wxyz')).toBeVisible();
   await expect(page.getByText(REAL_KEY)).toHaveCount(0);
+  // Edit it: a new name, and the saved key stays when the box is left empty.
+  await page.getByRole('button', { name: /^Edit key / }).click();
+  await expect(page.getByLabel('Short name in the address')).toHaveAttribute('readonly', '');
+  await shot(page, 'ai-key-edit');
+  await page.getByLabel('Name', { exact: true }).fill('My Claude key');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText('My Claude key')).toBeVisible();
+  await expect(page.getByText('ends in ••••wxyz')).toBeVisible();
 
   await page.getByRole('button', { name: 'Add' }).first().click(); // Machines → Add
   await page.getByLabel('Name', { exact: true }).fill('e2e-gpu');

@@ -297,6 +297,23 @@ export const aiKeyCreateSchema = z.object({
 });
 export type AiKeyCreate = z.infer<typeof aiKeyCreateSchema>;
 
+/** Editing a key: everything but its provider and its address name, which machines use. */
+export const aiKeyUpdateSchema = z.object({
+  name: displayNameSchema(GATEWAY_LIMITS.keyNameMax).optional(),
+  /** Empty or left out: keep the saved key. */
+  secret: z.string().trim().max(GATEWAY_LIMITS.secretMax).optional(),
+  upstream: z.string().trim().max(300).optional(),
+  /** Empty clears it. */
+  model: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9._:/-]{1,100}$/, 'Use the model name exactly as the provider writes it')
+    .optional()
+    .or(z.literal('')),
+  modelSettings: modelSettingsSchema.nullable().optional(),
+});
+export type AiKeyUpdate = z.infer<typeof aiKeyUpdateSchema>;
+
 const timeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use a time like 09:00');
 
 function validTimeZone(tz: string): boolean {
