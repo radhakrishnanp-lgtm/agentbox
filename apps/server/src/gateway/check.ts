@@ -29,6 +29,8 @@ const ANTHROPIC_VERSION = '2023-06-01';
 
 /** The smallest sensible question for this kind of key: "which models do I have?". */
 function probePath(key: AiKeyRow): string {
+  // Its address is the base URL as OpenCode uses it, /v1 included.
+  if (key.preset === 'openai-compatible') return '/models';
   switch (key.auth) {
     case 'x-goog-api-key':
       return '/v1beta/models?pageSize=1';
@@ -75,7 +77,28 @@ function vaultProblem(err: unknown, what: string): string {
   return `Could not get ${what} from the terminals on this server.`;
 }
 
-export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResult> {
+/** The model ids in an OpenAI-style list of models, or null when it isn't one. */
+function listedModels(body: string): string[] | null {
+  try {
+    const data = (JSON.parse(body) as { data?: unknown }).data;
+    if (!Array.isArray(data)) return null;
+    return data
+      .map((m) => (m && typeof m === 'object' ? (m as { id?: unknown }).id : undefined))
+      .filter((id): id is string => typeof id === 'string');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Asks the provider one small question with this key. `secret` tests a key
+ * that isn't saved yet (or a new key for a saved one).
+ */
+export async function checkKey(
+  s: Services,
+  key: AiKeyRow,
+  secretOverride?: string,
+): Promise<KeyCheckResult> {
   let secret: string;
   let accountId: string | undefined;
   let upstream = key.upstream;
@@ -124,7 +147,7 @@ export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResu
       return { ok: false, status: null, message: vaultProblem(err, 'your OpenCode login') };
     }
   } else {
-    secret = s.gateway.revealSecret(key);
+    secret = secretOverride ?? s.gateway.revealSecret(key);
   }
 
   const path = probePath(key);
@@ -148,14 +171,36 @@ export async function checkKey(s: Services, key: AiKeyRow): Promise<KeyCheckResu
       bodyTimeout: TIMEOUT_MS,
     });
     status = res.statusCode;
-    body = (await res.body.text()).slice(0, 4000);
+    body = (await res.body.text()).slice(0, 2_000_000);
   } catch {
     return { ok: false, status: null, message: `Could not reach ${host}.` };
   }
 
-  const detail = providerMessage(body);
+  const detail = providerMessage(body.slice(0, 4000));
   if (status >= 200 && status < 300) {
+    const models = key.preset === 'openai-compatible' && key.model ? listedModels(body) : null;
+    if (models && key.model) {
+      return models.includes(key.model)
+        ? {
+            ok: true,
+            status,
+            message: `${host} answered. This key works, and it has ${key.model}.`,
+          }
+        : {
+            ok: false,
+            status,
+            message:
+              `${host} accepted the key, but it has no model called ${key.model}. ${models.length ? `It has: ${models.slice(0, 8).join(', ')}${models.length > 8 ? ', …' : ''}.` : ''}`.trim(),
+          };
+    }
     return { ok: true, status, message: `${host} answered. This key works.` };
+  }
+  if (status === 404 && key.preset === 'openai-compatible') {
+    return {
+      ok: false,
+      status,
+      message: `${host} has no ${new URL(`${upstream}${path}`).pathname}. Check the base URL: it usually ends in /v1.`,
+    };
   }
   if (status === 401 || status === 403) {
     const what =

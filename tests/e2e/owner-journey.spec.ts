@@ -302,7 +302,15 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await expect(page.getByLabel('Reasoning effort')).toHaveValue('medium');
   await page.getByLabel('Reasoning effort').selectOption('medium');
   await page.getByLabel('Supports images').check();
+  // Test before saving, with a base URL typed without /v1.
+  await page.getByLabel('Key', { exact: true }).fill('sk-compatible-test-key');
+  await expect(page.getByLabel('Key', { exact: true })).toHaveAttribute('type', 'text');
+  await page.getByLabel('Base URL').fill(provider.url);
+  await page.getByLabel('Model', { exact: true }).fill('model-1');
+  await page.getByRole('button', { name: 'Test before saving' }).click();
+  await expect(page.getByText(/This key works, and it has model-1/)).toBeVisible();
   await shot(page, 'ai-key-openai-compatible');
+  await page.getByLabel('Key', { exact: true }).fill('');
   await page.getByLabel('Provider', { exact: true }).selectOption({ index: 0 });
   await page.getByLabel('Key', { exact: true }).fill(REAL_KEY);
   await page.getByLabel('Provider address').fill(provider.url);

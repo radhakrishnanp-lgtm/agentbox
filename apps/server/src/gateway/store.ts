@@ -68,6 +68,11 @@ export function checkUpstream(raw: string, config: Config): string {
   return url.toString().replace(/\/+$/, '');
 }
 
+/** An OpenAI-compatible base URL typed without a path almost always means …/v1. */
+export function compatibleBaseUrl(url: string): string {
+  return new URL(url).pathname === '/' ? `${url}/v1` : url;
+}
+
 export class GatewayStore {
   readonly #db: Db;
   readonly #clock: Clock;
@@ -119,14 +124,16 @@ export class GatewayStore {
       .get();
   }
 
-  addKey(input: AiKeyCreate, actor: string, ip: string): AiKeySummary {
+  /** A key as it would be saved, checked but not saved: for adding it, and for Test before Save. */
+  #prepareKey(input: AiKeyCreate): { row: AiKeyRow; secret: string } {
     const preset = PROVIDER_PRESETS.find((p) => p.id === input.preset);
     if (!preset) throw new AppError('bad_request', 'Pick a provider from the list.');
     // A login key always goes to its provider: the vault's token must never go anywhere else.
-    const upstream = checkUpstream(
+    let upstream = checkUpstream(
       preset.noSecret ? preset.upstream : input.upstream || preset.upstream,
       this.#config,
     );
+    if (preset.id === 'openai-compatible') upstream = compatibleBaseUrl(upstream);
     const auth: KeyAuthStyle = input.auth ?? preset.auth;
     const cli: GatewayCli | null = input.cli === undefined ? preset.cli : input.cli;
     const model = input.model ?? null;
@@ -152,9 +159,6 @@ export class GatewayStore {
     }
     if (/\s/.test(secret)) {
       throw new AppError('bad_request', 'The key has a space or line break in it. Paste it again.');
-    }
-    if (this.keyBySlug(input.slug)) {
-      throw new AppError('conflict', `A key already uses the address name “${input.slug}”.`);
     }
     const now = this.#clock.now();
     const id = newId();
@@ -182,6 +186,32 @@ export class GatewayStore {
       createdAt: now,
       updatedAt: now,
     };
+    return { row, secret };
+  }
+
+  /**
+   * Test before Save: the key as the form has it now. For a saved key (`id`),
+   * an empty key box means its saved key.
+   */
+  draftKey(input: AiKeyCreate, id?: string): { row: AiKeyRow; secret: string } {
+    const saved = id ? this.activeKeys().find((k) => k.id === id) : undefined;
+    if (id && !saved) throw new AppError('not_found', 'That key was not found.');
+    if (saved && input.preset !== saved.preset) {
+      throw new AppError('bad_request', 'A saved key keeps its provider.');
+    }
+    const keepSecret = saved && !input.secret;
+    const { row, secret } = this.#prepareKey(
+      keepSecret ? { ...input, secret: 'saved-key-placeholder' } : input,
+    );
+    return { row, secret: keepSecret ? this.revealSecret(saved) : secret };
+  }
+
+  addKey(input: AiKeyCreate, actor: string, ip: string): AiKeySummary {
+    if (this.keyBySlug(input.slug)) {
+      throw new AppError('conflict', `A key already uses the address name “${input.slug}”.`);
+    }
+    const { row } = this.#prepareKey(input);
+    const { id } = row;
     this.#db.insert(aiKey).values(row).run();
     this.#audit.record({
       actor,
@@ -189,7 +219,7 @@ export class GatewayStore {
       targetType: 'ai_key',
       targetId: id,
       ip,
-      details: { name: row.name, slug: row.slug, preset: row.preset, upstream },
+      details: { name: row.name, slug: row.slug, preset: row.preset, upstream: row.upstream },
     });
     return this.keySummary(row);
   }
@@ -225,9 +255,14 @@ export class GatewayStore {
         set.hint = patch.secret.slice(-4);
         changed.push('key');
       }
-      if (patch.upstream !== undefined && patch.upstream !== k.upstream) {
-        set.upstream = checkUpstream(patch.upstream, this.#config);
-        changed.push('address');
+      if (patch.upstream !== undefined) {
+        let upstream = checkUpstream(patch.upstream, this.#config);
+        // Also fixes a key saved before /v1 was added on its own.
+        if (k.preset === 'openai-compatible') upstream = compatibleBaseUrl(upstream);
+        if (upstream !== k.upstream) {
+          set.upstream = upstream;
+          changed.push('address');
+        }
       }
     }
     if (patch.model !== undefined) {

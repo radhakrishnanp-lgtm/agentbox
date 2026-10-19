@@ -2111,6 +2111,65 @@ describe('Kimi Code subscription key', () => {
 });
 
 describe('testing a key', () => {
+  it('tests an OpenAI Compatible key before it is saved, and adds /v1 to a bare address', async () => {
+    const draft = {
+      preset: 'openai-compatible',
+      name: 'My GLM',
+      slug: 'my-glm',
+      secret: 'sk-draft-provider-key',
+      upstream: provider.url,
+      model: 'model-1',
+    };
+    await h.reauth(laptop);
+    const ok = await laptop.post('/api/gateway/keys/test', draft);
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(ok.json<KeyCheckResult>()).toMatchObject({ ok: true, status: 200 });
+    expect(ok.json<KeyCheckResult>().message).toMatch(/has model-1/);
+    expect(provider.last().url).toBe('/v1/models');
+    expect(provider.last().headers.authorization).toBe('Bearer sk-draft-provider-key');
+    // Nothing was saved.
+    expect(h.services.gateway.activeKeys()).toHaveLength(0);
+
+    await h.reauth(laptop);
+    const wrong = await laptop.post('/api/gateway/keys/test', { ...draft, model: 'glm-9' });
+    expect(wrong.json<KeyCheckResult>()).toMatchObject({ ok: false });
+    expect(wrong.json<KeyCheckResult>().message).toMatch(/no model called glm-9\. It has: model-1/);
+
+    const saved = await addKey({ ...draft, secret: 'sk-saved-provider-key' });
+    expect(saved.upstream).toBe(`${provider.url}/v1`);
+    // Editing with the key box empty tests the saved key.
+    await h.reauth(laptop);
+    const again = await laptop.post('/api/gateway/keys/test', {
+      ...draft,
+      secret: '',
+      upstream: saved.upstream,
+      id: saved.id,
+    });
+    expect(again.json<KeyCheckResult>().ok).toBe(true);
+    expect(provider.last().url).toBe('/v1/models');
+    expect(provider.last().headers.authorization).toBe('Bearer sk-saved-provider-key');
+    // A saved key's Test is the same check.
+    const row = await laptop.post(`/api/gateway/keys/${saved.id}/test`);
+    expect(row.json<KeyCheckResult>().message).toMatch(/has model-1/);
+    // A base URL without /v1 after editing gets it too.
+    await h.reauth(laptop);
+    const edited = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/keys/${saved.id}`,
+      payload: { upstream: `${provider.url}/` },
+    });
+    expect(edited.json<AiKeySummary>().upstream).toBe(`${provider.url}/v1`);
+    // A key saved before this change, without /v1: saving its edit form fixes it.
+    h.services.db.update(aiKey).set({ upstream: provider.url }).where(eq(aiKey.id, saved.id)).run();
+    await h.reauth(laptop);
+    const fixed = await laptop.request({
+      method: 'PATCH',
+      url: `/api/gateway/keys/${saved.id}`,
+      payload: { upstream: provider.url },
+    });
+    expect(fixed.json<AiKeySummary>().upstream).toBe(`${provider.url}/v1`);
+  });
+
   it('asks the provider with the real key and says it works', async () => {
     const key = await addKey();
     const res = await laptop.post(`/api/gateway/keys/${key.id}/test`);
