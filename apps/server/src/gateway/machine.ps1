@@ -279,7 +279,8 @@
       '  exit /b 1',
       ')',
       'set "agentbox_real="',
-      "for %%D in (`"%PATH:;=`" `"%`") do if not defined agentbox_real call :agentbox_look `"%%~D`" $Cli",
+      # PATH first, then where the CLIs' own installers put them (see Get-InstallDirs).
+      "for %%D in (`"%PATH:;=`" `"%`" `"%USERPROFILE%\.local\bin`" `"%USERPROFILE%\.opencode\bin`" `"%USERPROFILE%\.grok\bin`" `"%USERPROFILE%\.bun\bin`" `"%APPDATA%\npm`") do if not defined agentbox_real call :agentbox_look `"%%~D`" $Cli",
       'if not defined agentbox_real (',
       "  echo agentbox: $Cli is not installed on this computer yet. 1>&2",
       '  exit /b 127',
@@ -593,9 +594,20 @@ try {
     }
   }
 
+  # Where the CLIs' own installers put them, searched after PATH: a fresh
+  # install often isn't on PATH yet (claude's goes to %USERPROFILE%\.local\bin).
+  function Get-InstallDirs {
+    $home_ = [Environment]::GetFolderPath('UserProfile')
+    $roaming = [Environment]::GetFolderPath('ApplicationData')
+    $dirs = @()
+    if ($home_) { $dirs += @('.local\bin', '.opencode\bin', '.grok\bin', '.bun\bin') | ForEach-Object { Join-Path $home_ $_ } }
+    if ($roaming) { $dirs += Join-Path $roaming 'npm' }
+    return $dirs
+  }
+
   # The real CLI the wrapper would run: the first one on PATH outside agentbox.
   function Find-RealCli([string]$Cli) {
-    foreach ($dir in ($env:Path -split ';')) {
+    foreach ($dir in (($env:Path -split ';') + (Get-InstallDirs))) {
       if (-not $dir -or $dir.TrimEnd('\') -eq $Bin) { continue }
       foreach ($ext in @('.com', '.exe', '.bat', '.cmd')) {
         $p = "$($dir.TrimEnd('\'))\$Cli$ext"
@@ -652,7 +664,7 @@ try {
         $real = Find-RealCli $cli
         $hidden = @($shadow | Where-Object { $_.Cli -eq $cli })
         if (-not $real) {
-          Say "  ${cli}: install the $cli CLI as usual; it will use agentbox automatically"
+          Say "  ${cli}: not found. Install the $cli CLI as usual; it will use agentbox automatically"
         } elseif ($hidden.Count -gt 0) {
           Say "  ${cli}: Windows finds the $cli in $($hidden[0].Dir) (system PATH) before agentbox."
           Say "        Type $cli.cmd instead of $cli, or install $cli just for your user."

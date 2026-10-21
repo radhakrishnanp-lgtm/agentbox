@@ -5,7 +5,7 @@
  */
 import { execFile } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -336,6 +336,36 @@ describe('machine setup script', () => {
     expect(
       listed.json<{ machines: MachineCreated['machine'][] }>().machines[0]?.boundComputer?.label,
     ).toMatch(/\(.+\)/);
+  });
+
+  it('finds a CLI its installer put in ~/.local/bin even when that is not on PATH', async () => {
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    const address = h.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('no address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const key = await addKey({ preset: 'anthropic', name: 'Claude', slug: 'anthropic' });
+    await h.reauth(laptop);
+    const created = await laptop.post('/api/gateway/machines', {
+      name: 'laptop-2',
+      keyIds: [key.id],
+      dailyTokenLimit: null,
+    });
+    const { pass } = created.json<MachineCreated>();
+    const pc = computer();
+    // claude's native installer: ~/.local/bin/claude, with PATH not updated yet.
+    mkdirSync(join(pc.home, '.local/bin'), { recursive: true });
+    renameSync(join(dir, 'fakebin/claude'), join(pc.home, '.local/bin/claude'));
+    const script = join(dir, 'machine.sh');
+    writeFileSync(script, renderMachineScript(base));
+    const report = await pc.sh(`sh '${script}'`, { AGENTBOX_PASS: pass });
+    expect(report).toContain(
+      `claude: ready (found at ${pc.home}/.local/bin/claude, whose folder isn't on your PATH)`,
+    );
+
+    await pc.sh('claude hi');
+    const claude = pc.seen('claude');
+    expect(claude.vars.get('ANTHROPIC_BASE_URL')).toBe(`${base}/gw/anthropic`);
+    expect(claude.args).toEqual(['hi']);
   });
 
   it('puts the PATH line where a login shell will read it, and takes it away again', async () => {
