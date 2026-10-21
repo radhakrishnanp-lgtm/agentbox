@@ -33,6 +33,12 @@ MARK_END='# <<< agentbox machine <<<'
 CLIS='claude codex grok kimi gemini'
 # Would point OpenCode at a provider directly, or swap in other settings.
 OPENCODE_UNSET='ANTHROPIC_API_KEY ANTHROPIC_BASE_URL OPENAI_API_KEY OPENAI_BASE_URL XAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENERATIVE_AI_API_KEY OPENROUTER_API_KEY MOONSHOT_API_KEY OPENCODE_API_KEY OPENCODE_CONFIG_CONTENT OPENCODE_CONFIG_DIR'
+# Where the CLIs' own installers put them, searched after PATH: a fresh install
+# often isn't on PATH yet (claude's goes to ~/.local/bin). Expanded when a
+# wrapper runs.
+INSTALL_DIRS='$HOME/.local/bin:$HOME/.claude/local:$HOME/.opencode/bin:$HOME/.grok/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin'
+# The wrappers' PATH for finding the real CLI: without agentbox's own folder.
+FIND_PATH='path=$(printf "%s" "$PATH:'"$INSTALL_DIRS"'" | tr ":" "\n" | grep -vxF "$bin" | paste -s -d: -)'
 TAB=$(printf '\t')
 GEMINI_SETTINGS='{"security":{"auth":{"selectedType":"gemini-api-key"}},"privacy":{"usageStatisticsEnabled":false}}'
 
@@ -252,7 +258,7 @@ write_wrapper() {
     say "bin='$BIN'"
     say "pass_file='$PASS_FILE'"
     say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
-    say 'path=$(printf "%s" "$PATH" | tr ":" "\n" | grep -vxF "$bin" | paste -s -d: -)'
+    say "$FIND_PATH"
     say "real=\$(PATH=\"\$path\" command -v $cli) || { echo \"agentbox: $cli is not installed on this machine yet.\" >&2; exit 127; }"
     [ -z "$UNSET" ] || say "unset $UNSET"
     for pair in $HOMES; do
@@ -318,7 +324,7 @@ write_opencode() {
     say "bin='$BIN'"
     say "pass_file='$PASS_FILE'"
     say '[ -r "$pass_file" ] || { echo "agentbox: no pass on this machine. Run: agentbox-machine refresh" >&2; exit 1; }'
-    say 'path=$(printf "%s" "$PATH" | tr ":" "\n" | grep -vxF "$bin" | paste -s -d: -)'
+    say "$FIND_PATH"
     say "real=\$(PATH=\"\$path\" command -v opencode) || { echo \"agentbox: opencode is not installed on this machine yet.\" >&2; exit 127; }"
     say "unset $OPENCODE_UNSET"
     say "export OPENCODE_CONFIG='$dir/opencode.json'"
@@ -378,7 +384,7 @@ write_grok_login() {
     say '# Written by agentbox: runs the real grok, signed in with your agentbox Grok login.'
     say '# Remove with: agentbox-machine uninstall'
     say "bin='$BIN'"
-    say 'path=$(printf "%s" "$PATH" | tr ":" "\n" | grep -vxF "$bin" | paste -s -d: -)'
+    say "$FIND_PATH"
     say 'real=$(PATH="$path" command -v grok) || { echo "agentbox: grok is not installed on this machine yet." >&2; exit 127; }'
     # Anything that would sign grok in some other way, or send it elsewhere.
     say 'unset XAI_API_KEY GROK_API_KEY GROK_CODE_XAI_API_KEY GROK_XAI_API_BASE_URL GROK_BASE_URL GROK_CLI_CHAT_PROXY_BASE_URL GROK_AUTH GROK_AUTH_PATH GROK_OIDC_ISSUER GROK_OIDC_CLIENT_ID GROK_DEPLOYMENT_KEY GROK_MODEL'
@@ -485,11 +491,15 @@ report() {
   else
     say "These commands now use your agentbox keys:$WIRED"
     for cli in $WIRED; do
-      p=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$BIN" | paste -s -d: -)
-      if PATH="$p" command -v "$cli" >/dev/null 2>&1; then
-        say "  $cli: ready"
+      p=$(eval "printf '%s' \"\$PATH:$INSTALL_DIRS\"" | tr ':' '\n' | grep -vxF "$BIN" | paste -s -d: -)
+      if found=$(PATH="$p" command -v "$cli" 2>/dev/null); then
+        if PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$BIN" | paste -s -d: -) command -v "$cli" >/dev/null 2>&1; then
+          say "  $cli: ready"
+        else
+          say "  $cli: ready (found at $found, whose folder isn't on your PATH)"
+        fi
       else
-        say "  $cli: install the $cli CLI as usual; it will use agentbox automatically"
+        say "  $cli: not found. Install the $cli CLI as usual; it will use agentbox automatically"
       fi
     done
   fi
