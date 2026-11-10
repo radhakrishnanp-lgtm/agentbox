@@ -1150,7 +1150,11 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       return m;
     };
 
-    app.get('/v1/models', { config: { rateLimit: false } }, async (request, reply) => {
+    /** The pass, its speed limit, then every model its keys offer, named <key>/<model>. */
+    const listModels = async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+    ): Promise<OpenaiModel[] | FastifyReply> => {
       const m = openaiCaller(request, reply);
       if (!('id' in m)) return m;
       const wait = state.take(m.id, m.rpm, s.clock.now());
@@ -1181,8 +1185,45 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         if (k.model) add(`${k.slug}/${k.model}`, k.slug);
         for (const id of lists[i] ?? []) add(`${k.slug}/${id}`, k.slug);
       });
+      return data;
+    };
+
+    app.get('/v1/models', { config: { rateLimit: false } }, async (request, reply) => {
+      const data = await listModels(request, reply);
+      if (!Array.isArray(data)) return data;
       reply.header('cache-control', 'no-store');
       return reply.send({ object: 'list', data });
+    });
+
+    // One model (the SDKs' models.retrieve), and a JSON answer for any other
+    // GET, so a program never gets the web page by mistake.
+    app.get('/v1/*', { config: { rateLimit: false } }, async (request, reply) => {
+      const rawPath = (request.raw.url ?? '').split('?')[0] ?? '';
+      if (rawPath.startsWith('/v1/models/')) {
+        let id: string;
+        try {
+          id = decodeURIComponent(rawPath.slice('/v1/models/'.length));
+        } catch {
+          return fail(reply, 400, 'invalid_request_error', 'that model name is not valid.');
+        }
+        const data = await listModels(request, reply);
+        if (!Array.isArray(data)) return data;
+        const found = data.find((d) => d.id === id);
+        reply.header('cache-control', 'no-store');
+        if (found) return reply.send(found);
+        return fail(
+          reply,
+          404,
+          'not_found_error',
+          'this pass has no such model. GET /v1/models lists the ones it may use.',
+        );
+      }
+      return fail(
+        reply,
+        404,
+        'not_found_error',
+        'the OpenAI-compatible API has no such address. GET /v1/models lists the models.',
+      );
     });
 
     app.post(

@@ -323,7 +323,7 @@ test('owner sets up agentbox and signs in on two devices', async ({ browser }) =
   await shot(page, 'ai-key-edit');
   await page.getByLabel('Name', { exact: true }).fill('My Claude key');
   await page.getByRole('button', { name: 'Save changes' }).click();
-  await expect(page.getByText('My Claude key')).toBeVisible();
+  await expect(page.getByText('My Claude key').first()).toBeVisible();
   await expect(page.getByText('ends in ••••wxyz')).toBeVisible();
 
   await page.getByRole('button', { name: 'Add' }).first().click(); // Machines → Add

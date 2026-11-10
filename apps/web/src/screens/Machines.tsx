@@ -1920,7 +1920,7 @@ function OpenAiApi({ data }: { data: GatewayOverview | null }) {
         description="Use your AI keys from any app or SDK that speaks the OpenAI API."
       />
       <CardBody className="space-y-4 text-sm">
-        <CopyLine label="Base URL" value={openaiBaseUrl()} />
+        <CopyLine label="Endpoint" value={openaiBaseUrl()} />
         <p className="text-muted">
           <span className="font-medium text-text">API key:</span> a machine's pass. Add a machine
           for each app (for example “my-app”), tick the keys it may use, and paste its pass as the

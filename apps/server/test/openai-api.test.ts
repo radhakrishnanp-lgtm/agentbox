@@ -308,3 +308,109 @@ describe('OpenAI-compatible routing', () => {
     });
   });
 });
+
+describe('OpenAI-compatible API safety', () => {
+  it('never lets /v1 reach the signed-in browser API, whatever the path', async () => {
+    const { anthropic } = await threeKeys();
+    const { pass } = await addMachine([anthropic.id]);
+    for (const url of [
+      '/v1/../api/gateway/keys',
+      '/v1/%2e%2e/api/gateway/keys',
+      '/v1/chat/completions/../../api/gateway/keys',
+      '/v1//api/gateway/keys',
+    ]) {
+      const res = await laptop.request({
+        raw: true,
+        method: 'POST',
+        url,
+        headers: { origin: 'https://evil.example', 'content-type': 'application/json' },
+        payload: JSON.stringify({ preset: 'custom', name: 'x', slug: 'evil', secret: 'x' }),
+      });
+      expect(res.statusCode, url).not.toBe(200);
+    }
+    const keys = (await laptop.get('/api/gateway')).json().keys as { slug: string }[];
+    expect(keys.map((k) => k.slug)).not.toContain('evil');
+    // And a pass is no cookie: it can't use the browser API either.
+    const res = await api({ method: 'GET', url: '/api/gateway', pass });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('refuses a body that is not a JSON object, without asking the provider', async () => {
+    const { anthropic } = await threeKeys();
+    const { pass } = await addMachine([anthropic.id]);
+    const before = provider.seen.length;
+    for (const payload of ['', 'null', '[]', '"x"', '{bad']) {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        headers: {
+          host: RP_ID,
+          'x-forwarded-for': MACHINE_IP,
+          'x-forwarded-proto': 'https',
+          'content-type': 'application/json',
+          authorization: `Bearer ${pass}`,
+        },
+        payload,
+      });
+      expect(res.statusCode, payload).toBe(400);
+    }
+    expect(provider.seen.length).toBe(before);
+  });
+
+  it('locks out an address that keeps guessing API keys', async () => {
+    let res;
+    for (let i = 0; i < 21; i++) {
+      res = await api({
+        url: '/v1/chat/completions',
+        pass: `abx_${'A'.repeat(42)}${String(i % 10)}`,
+        payload: chat('anthropic/x'),
+      });
+    }
+    expect(res?.statusCode).toBe(429);
+  });
+
+  it('never sends the pass or agentbox headers to the provider', async () => {
+    const { openrouter } = await threeKeys();
+    const { pass } = await addMachine([openrouter.id]);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        host: RP_ID,
+        'x-forwarded-for': MACHINE_IP,
+        'x-forwarded-proto': 'https',
+        'content-type': 'application/json',
+        authorization: `Bearer ${pass}`,
+        'x-api-key': pass,
+        'x-agentbox-computer': 'abcdef0123456789',
+        cookie: 'agentbox_sid=x',
+      },
+      payload: JSON.stringify(chat('openrouter/x')),
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const seen = provider.last();
+    expect(JSON.stringify(seen)).not.toContain(pass);
+    expect(seen.headers['x-agentbox-computer']).toBeUndefined();
+    expect(seen.headers.cookie).toBeUndefined();
+    expect(seen.headers['x-api-key']).toBeUndefined();
+  });
+});
+
+describe('OpenAI-compatible API, other GETs', () => {
+  it('answers models.retrieve, and JSON (never the web page) for any other GET', async () => {
+    const { openrouter } = await threeKeys();
+    const { pass } = await addMachine([openrouter.id]);
+    let res = await api({ method: 'GET', url: '/v1/models/openrouter/model-1', pass });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ id: 'openrouter/model-1', object: 'model' });
+    res = await api({ method: 'GET', url: '/v1/models/openrouter%2Fmodel-1', pass });
+    expect(res.json().id).toBe('openrouter/model-1');
+    res = await api({ method: 'GET', url: '/v1/models/nope', pass });
+    expect(res.statusCode).toBe(404);
+    res = await api({ method: 'GET', url: '/v1/files', pass });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers['content-type']).toContain('application/json');
+    res = await api({ method: 'GET', url: '/v1/models/x' });
+    expect(res.statusCode).toBe(401);
+  });
+});

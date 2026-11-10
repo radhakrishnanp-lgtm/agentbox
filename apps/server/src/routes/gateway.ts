@@ -65,7 +65,7 @@ export function gatewayAdminRoutes(s: Services): FastifyPluginAsyncZod {
           actor: actor(request),
           action: 'ai_key.tested',
           targetType: 'ai_key',
-          targetId: id ?? null,
+          ...(id ? { targetId: id } : {}),
           ip: request.ip,
           details: {
             name: row.name,
