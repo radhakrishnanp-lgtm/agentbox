@@ -746,6 +746,9 @@ function MachineForm(props: MachineFormProps) {
               <span>
                 {k.name}
                 <span className="text-muted">{usedBy(k) ? ` · for ${usedBy(k)}` : ''}</span>
+                {NOT_OPENAI_API.includes(k.auth) ? (
+                  <span className="text-muted"> · CLI only, not on the OpenAI-compatible API</span>
+                ) : null}
               </span>
             </label>
           ))}
