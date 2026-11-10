@@ -60,6 +60,8 @@ export async function registerSecurity(app: FastifyInstance, config: Config): Pr
     // The key gateway is called by CLIs, not browsers. It takes no cookies and
     // authenticates every request with a machine pass instead.
     if (request.url.startsWith('/gw/')) return;
+    // So is the OpenAI-compatible API, which takes a machine pass as its API key.
+    if (request.url.startsWith('/v1/')) return;
 
     const origin = request.headers.origin;
     const fetchSite = request.headers['sec-fetch-site'];

@@ -1,5 +1,6 @@
 import {
   GATEWAY_LIMITS,
+  NOT_OPENAI_API,
   aiKeyCreateSchema,
   aiKeyUpdateSchema,
   ipRuleSchema,
@@ -22,6 +23,7 @@ import {
   Copy,
   KeyRound,
   Pencil,
+  Plug,
   Play,
   Plus,
   Power,
@@ -180,6 +182,7 @@ export function Machines() {
           }}
         />
         <KeyList data={overview.data} onChange={overview.reload} />
+        <OpenAiApi data={overview.data} />
         <HowItWorks />
       </div>
     </>
@@ -209,6 +212,10 @@ function SetupSteps({ created, onClose }: { created: MachineCreated; onClose: ()
           After that, open a new terminal there (PowerShell or Command Prompt on Windows) and use
           claude, codex, grok, kimi, gemini or opencode as usual. They use the keys on agentbox; the
           computer never gets them.
+        </p>
+        <p className="text-sm text-muted">
+          For an app instead of a computer: use <code className="font-mono">{openaiBaseUrl()}</code>{' '}
+          as its OpenAI base URL and this pass as its API key. See “OpenAI-compatible API” below.
         </p>
         <Button variant="secondary" onClick={onClose}>
           Done
@@ -1889,6 +1896,74 @@ function ModelSettingsFields({
         </label>
       </div>
     </fieldset>
+  );
+}
+
+/** The OpenAI-compatible API's base URL on this agentbox. */
+function openaiBaseUrl(): string {
+  return `${window.location.origin}/v1`;
+}
+
+/**
+ * One OpenAI-compatible endpoint for all your API keys. A machine pass is its
+ * API key, and the model names the key: <key address name>/<model>.
+ */
+function OpenAiApi({ data }: { data: GatewayOverview | null }) {
+  const keys = data?.keys ?? [];
+  const usable = keys.filter((k) => !NOT_OPENAI_API.includes(k.auth));
+  const left = keys.filter((k) => NOT_OPENAI_API.includes(k.auth));
+  return (
+    <Card>
+      <CardHeader
+        icon={<Plug className="size-5" aria-hidden />}
+        title="OpenAI-compatible API"
+        description="Use your AI keys from any app or SDK that speaks the OpenAI API."
+      />
+      <CardBody className="space-y-4 text-sm">
+        <CopyLine label="Endpoint" value={openaiBaseUrl()} />
+        <p className="text-muted">
+          <span className="font-medium text-text">API key:</span> a machine's pass. Add a machine
+          for each app (for example “my-app”), tick the keys it may use, and paste its pass as the
+          API key. Stop, limits, address lock, schedule and Logs work the same as for a computer.
+        </p>
+        <div className="space-y-1.5">
+          <p className="font-medium">Model names</p>
+          <p className="text-muted">
+            The key's address name, a slash, then the provider's model. A key with a saved model
+            also answers to its name alone. GET /v1/models lists what a pass may use.
+          </p>
+          {usable.length ? (
+            <ul className="space-y-1">
+              {usable.map((k) => (
+                <li key={k.id} className="flex flex-wrap items-baseline gap-x-2">
+                  <code className="font-mono break-all">
+                    {k.slug}/{k.model ?? '<model>'}
+                  </code>
+                  <span className="text-muted">{k.name}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-muted">Add an API key above to use it here.</p>
+          )}
+        </div>
+        <p className="text-muted">
+          It offers /v1/models, /v1/chat/completions, /v1/completions, /v1/embeddings,
+          /v1/responses, /v1/moderations, /v1/images/generations and /v1/audio/speech, as far as
+          each provider has them. Claude and Gemini keys answer chat completions in OpenAI's format
+          through their own OpenAI-compatible addresses.
+        </p>
+        {left.length ? (
+          <Alert tone="warning" title="Not offered here">
+            {left.map((k) => k.name).join(', ')}:{' '}
+            {left.length === 1 ? 'this is a subscription login' : 'these are subscription logins'}{' '}
+            that the provider allows only in its own app (Claude Code, Codex, Grok or OpenCode), not
+            as an API for other programs. They keep working on your computers as before. For apps,
+            add an API key from the same provider.
+          </Alert>
+        ) : null}
+      </CardBody>
+    </Card>
   );
 }
 

@@ -25,6 +25,8 @@ export class FakeProvider {
   sse: string | null = null;
   /** When set, /v1/messages refuses requests that ask for thinking.display (like a provider that doesn't know it). */
   rejectDisplay = false;
+  /** When set, chat completions refuse stream_options (like a provider that doesn't know it). */
+  rejectStreamOptions = false;
   #server: Server;
   url = '';
 
@@ -41,7 +43,10 @@ export class FakeProvider {
           body,
         });
         // OpenCode Zen and Go live under /inference and /inference/go.
-        const path = ((req.url ?? '').split('?')[0] ?? '').replace(/^\/inference(\/go)?(?=\/)/, '');
+        // Gemini's OpenAI-compatible API lives under /v1beta/openai.
+        const path = ((req.url ?? '').split('?')[0] ?? '')
+          .replace(/^\/inference(\/go)?(?=\/)/, '')
+          .replace(/^\/v1beta\/openai(?=\/)/, '/v1');
         const json = (status: number, value: unknown, extra: Record<string, string> = {}) => {
           res.writeHead(status, {
             'content-type': 'application/json',
@@ -139,6 +144,27 @@ export class FakeProvider {
           return;
         }
         if (path === '/v1/chat/completions' || path === '/coding/v1/chat/completions') {
+          const parsed = JSON.parse(body || '{}') as {
+            stream?: boolean;
+            stream_options?: { include_usage?: boolean };
+          };
+          if (this.rejectStreamOptions && parsed.stream_options) {
+            json(400, { error: { message: 'Unrecognized request argument: stream_options' } });
+            return;
+          }
+          if (parsed.stream) {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.write(
+              `data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'hi' } }] })}\n\n`,
+            );
+            if (parsed.stream_options?.include_usage) {
+              res.write(
+                `data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', choices: [], usage: { prompt_tokens: 11, completion_tokens: 3 } })}\n\n`,
+              );
+            }
+            res.end('data: [DONE]\n\n');
+            return;
+          }
           json(200, {
             id: 'chatcmpl-1',
             object: 'chat.completion',

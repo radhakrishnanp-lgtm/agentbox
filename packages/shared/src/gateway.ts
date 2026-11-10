@@ -29,6 +29,17 @@ export const KEY_AUTH_STYLES = [
   'opencode-login',
 ] as const satisfies readonly KeyAuthStyle[];
 
+/**
+ * Subscription logins that the OpenAI-compatible API (/v1) never offers: their
+ * providers allow them only in their own apps, not as an API for other programs.
+ */
+export const NOT_OPENAI_API: readonly KeyAuthStyle[] = [
+  'anthropic-oauth',
+  'codex-login',
+  'grok-login',
+  'opencode-login',
+];
+
 /** The CLIs agentbox can wire up on a machine. */
 export const GATEWAY_CLIS = ['claude', 'codex', 'grok', 'kimi', 'gemini'] as const;
 export type GatewayCli = (typeof GATEWAY_CLIS)[number];
