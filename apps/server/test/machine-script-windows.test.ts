@@ -210,7 +210,7 @@ describe.skipIf(!PWSH)('Windows machine setup script', () => {
       const report = await pc.pwsh(pc.script, [], { AGENTBOX_PASS: pass });
       expect(report).toContain('This computer is set up as "windows-pc"');
       expect(report).toContain('These commands now use your agentbox keys: claude codex opencode');
-      expect(report).toContain('claude: install the claude CLI as usual');
+      expect(report).toContain('claude: not found. Install the claude CLI as usual');
       // OpenCode reads the pass file next to its settings; the pass is in neither.
       const ocText = readFileSync(join(pc.data, 'opencode', 'opencode.json'), 'utf8');
       expect(ocText).not.toContain(pass);
