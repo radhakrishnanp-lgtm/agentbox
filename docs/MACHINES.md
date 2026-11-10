@@ -259,3 +259,32 @@ Any tool that lets you set an API base address and key works too:
 
 - base address: `https://agent.example.com/gw/<key name>`, the key's gateway address shown in agentbox;
 - API key: the machine's pass (`abx_…`), sent as `Authorization: Bearer`, `x-api-key` or `x-goog-api-key`.
+
+## One OpenAI-compatible API for all your keys
+
+For apps and SDKs that speak the OpenAI API (the OpenAI SDKs, LangChain, LibreChat, Open WebUI, n8n …), agentbox has one endpoint for every API key you added:
+
+- base URL: `https://agent.example.com/v1`;
+- API key: a machine's pass (`abx_…`). Add a machine for each app, tick the keys it may use, and use its pass. Stop, limits, the address lock, the schedule and Logs work as for a computer. "Lock to this computer" needs the computer's ID, so leave it off for an app (or send the ID in an `X-Agentbox-Computer` header);
+- model: `<key address name>/<model>`, for example `anthropic/claude-sonnet-4-5`, `openai/gpt-5`, `gemini/gemini-2.5-flash` or `openrouter/meta-llama/llama-4-scout`. A key with a saved model also answers to its name alone (`kimi-code`). If the pass has only one key, the model can be given without a key name. `GET /v1/models` lists what the pass may use.
+
+```sh
+curl https://agent.example.com/v1/chat/completions \
+  -H "Authorization: Bearer abx_…" -H "Content-Type: application/json" \
+  -d '{"model":"anthropic/claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}'
+```
+
+It offers `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `/v1/moderations`, `/v1/images/generations` and `/v1/audio/speech`, as far as each provider has them. agentbox sends each request to the provider's own OpenAI-compatible address, so the answer comes back in OpenAI's format, streamed or not:
+
+| Key                                | Goes to                                                                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anthropic API key                  | `api.anthropic.com/v1` (Anthropic's OpenAI SDK compatibility)                                                                               |
+| Gemini API key                     | `generativelanguage.googleapis.com/v1beta/openai`                                                                                           |
+| OpenAI, xAI, Moonshot, OpenRouter  | their `/v1`                                                                                                                                 |
+| Moonshot key saved for Claude Code | `api.moonshot.ai/v1`                                                                                                                        |
+| Kimi Code subscription key         | `api.kimi.com/coding/v1`. Kimi lets only coding tools use plan keys, and agentbox sends your app's own name, so Kimi may refuse other apps. |
+| OpenAI Compatible, Other provider  | the base URL you typed                                                                                                                      |
+
+For a streamed chat agentbox asks for the token counts at the end (`stream_options.include_usage`), so Logs and the daily token limit see them; a provider that refuses that gets the request as your app sent it.
+
+Not offered, on purpose: the Claude Pro/Max subscription token, the ChatGPT login for Codex, the SuperGrok login and your OpenCode setup. Their providers allow those logins only in their own apps (Claude Code, Codex, the Grok CLI, OpenCode), not as an API for other programs, so agentbox answers 403 and says why. They keep working on your computers as before. For apps, add an API key from the same provider.

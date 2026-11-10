@@ -34,6 +34,14 @@ import type { LockoutPolicy } from '../security/lockout.ts';
 import type { Services } from '../services.ts';
 import { AppError } from '../lib/errors.ts';
 import { OPENCODE_PROVIDER_PATH, opencodeConfig } from './opencode.ts';
+import {
+  OPENAI_PATHS,
+  chooseKey,
+  modelIds,
+  openaiRoute,
+  providerBody,
+  type OpenaiModel,
+} from './openai.ts';
 import { addressCheck, machineSchedule, type AiKeyRow, type MachineRow } from './store.ts';
 import {
   TraceCollector,
@@ -737,6 +745,341 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       return reply.type('application/json').send(`${JSON.stringify(config, null, 2)}\n`);
     });
 
+    /**
+     * The machine's request on its way to the key's provider: the key and limit
+     * checks, the real key, the tracker, and the answer streamed back.
+     * `openai` is set for the OpenAI-compatible API (/v1): the request goes to
+     * the provider's own OpenAI-compatible address, with the key as a bearer token.
+     */
+    const forward = async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+      f: {
+        m: MachineRow;
+        key: AiKeyRow;
+        started: number;
+        path: string;
+        query: string;
+        body: Buffer | undefined;
+        openai?: { base: string; path: string; plain: Buffer | null };
+      },
+    ): Promise<FastifyReply> => {
+      const { m, key, started, path, query, body, openai } = f;
+      const model = requestModel(body, path);
+      /**
+       * Puts a request agentbox answered itself (a limit, a locked vault) in the
+       * logs. A machine that keeps getting refused gets one row a minute per reason.
+       */
+      const logRefused = (status: number) => {
+        if (!state.shouldAudit(`${m.id}:refused:${String(status)}`, s.clock.now(), MINUTE)) return;
+        s.gateway.recordUsage({
+          ts: started,
+          machineId: m.id,
+          keyId: key.id,
+          keySlug: key.slug,
+          method: request.method,
+          path,
+          model,
+          status,
+          durationMs: Math.max(0, s.clock.now() - started),
+          requestBytes: body?.length ?? 0,
+          responseBytes: 0,
+          inputTokens: null,
+          outputTokens: null,
+          ip: request.ip,
+        });
+      };
+      const refuse: typeof fail = (r, status, ...rest) => {
+        logRefused(status);
+        return fail(r, status, ...rest);
+      };
+      if (!m.keyIds.includes(key.id)) {
+        return refuse(
+          reply,
+          403,
+          'permission_error',
+          `this machine may not use the “${key.slug}” key. Allow it in agentbox → Machines.`,
+        );
+      }
+
+      const now = s.clock.now();
+      const wait = state.take(m.id, m.rpm, now);
+      if (wait > 0) {
+        if (state.shouldAudit(`${m.id}:rpm`, now)) {
+          s.audit.record({
+            actor: `machine:${m.id}`,
+            action: 'machine.limit_hit',
+            targetType: 'machine',
+            targetId: m.id,
+            ip: request.ip,
+            details: { limit: 'requests_per_minute', value: m.rpm },
+          });
+        }
+        return refuse(
+          reply,
+          429,
+          'rate_limit_error',
+          `speed limit reached (${m.rpm} requests a minute for this machine).`,
+          wait,
+        );
+      }
+      if (state.liveCount(m.id) >= MAX_CONCURRENT_PER_MACHINE) {
+        return refuse(
+          reply,
+          429,
+          'rate_limit_error',
+          'too many requests at once from this machine.',
+          2,
+        );
+      }
+      if (m.dailyTokenLimit !== null) {
+        const today = s.gateway.usageToday(m.id);
+        if (today.inputTokens + today.outputTokens >= m.dailyTokenLimit) {
+          if (state.shouldAudit(`${m.id}:daily`, now)) {
+            s.audit.record({
+              actor: `machine:${m.id}`,
+              action: 'machine.limit_hit',
+              targetType: 'machine',
+              targetId: m.id,
+              ip: request.ip,
+              details: { limit: 'daily_tokens', value: m.dailyTokenLimit },
+            });
+          }
+          return refuse(
+            reply,
+            429,
+            'rate_limit_error',
+            `daily token limit reached for this machine (${m.dailyTokenLimit.toLocaleString('en')}). It resets at 00:00 UTC.`,
+            3600,
+          );
+        }
+      }
+
+      seen(m, request);
+
+      let secret: string;
+      let accountId: string | undefined;
+      let upstreamBase = key.upstream;
+      let upstreamPath = path;
+      let extraHeaders: Record<string, string> = {};
+      if (openai) {
+        upstreamBase = openai.base;
+        upstreamPath = openai.path;
+        secret = s.gateway.revealSecret(key);
+      } else if (key.auth === 'grok-login') {
+        if (path === '/_session' && request.method === 'GET') return grokSession(request, reply, m);
+        if (path === '/_token') {
+          // Older setups fetched the xAI token itself; that let it outlive Stop.
+          return refuse(
+            reply,
+            403,
+            'permission_error',
+            'agentbox changed how Grok signs in on other computers. Run `agentbox-machine refresh` on this computer.',
+          );
+        }
+        const token = await vaultGrokToken(reply);
+        if (typeof token !== 'string') {
+          logRefused(reply.statusCode);
+          return token;
+        }
+        secret = token;
+        // Keys added before this change stored xAI's sign-in address instead.
+        if (upstreamBase === 'https://auth.x.ai') upstreamBase = GROK_CHAT_PROXY;
+      } else if (key.auth === 'codex-login') {
+        const login = await vaultCodexToken(reply);
+        if (!('token' in login)) {
+          logRefused(reply.statusCode);
+          return login;
+        }
+        secret = login.token;
+        accountId = login.accountId;
+        // The machine's codex uses <gateway>/v1 like any OpenAI-style provider;
+        // ChatGPT's Codex backend has no /v1 (…/backend-api/codex/responses).
+        if (upstreamPath.startsWith('/v1/')) upstreamPath = upstreamPath.slice(3);
+      } else if (key.auth === 'opencode-login' && path.startsWith(OPENCODE_PROVIDER_PATH)) {
+        // A provider set up in OpenCode on agentbox: /p/<its id>/<its path>.
+        const rest = path.slice(OPENCODE_PROVIDER_PATH.length);
+        const cut = rest.indexOf('/');
+        const id = cut < 0 ? rest : rest.slice(0, cut);
+        const found = await vaultOpencodeProvider(id, reply);
+        if (!('baseURL' in found)) {
+          logRefused(reply.statusCode);
+          return found;
+        }
+        upstreamBase = found.baseURL;
+        upstreamPath = cut < 0 ? '' : rest.slice(cut);
+        secret = found.key ?? '';
+        extraHeaders = Object.fromEntries(
+          Object.entries(found.headers).map(([k, v]) => [k.toLowerCase(), v]),
+        );
+      } else if (key.auth === 'opencode-login') {
+        const found = await vaultOpencodeKey(reply);
+        if (typeof found !== 'string') {
+          logRefused(reply.statusCode);
+          return found;
+        }
+        secret = found;
+      } else {
+        secret = s.gateway.revealSecret(key);
+      }
+
+      // Agent tracker (off unless you turn it on): what was asked and answered.
+      const trace =
+        s.tracker.enabled() && isModelCall(request.method, path) ? new TraceCollector() : null;
+      const answer: { type: string | undefined } = { type: undefined };
+      // The tracker asks the provider for readable thinking; the CLI's own settings stay as they were.
+      const askThinking =
+        trace !== null &&
+        !openai &&
+        request.method === 'POST' &&
+        !request.headers['content-encoding'] &&
+        !thinkingRefused.has(key.id);
+      const traceBody = askThinking ? withVisibleThinking(body) : null;
+      const betaHeader = request.headers['anthropic-beta'];
+      const traceBeta = askThinking
+        ? withoutHiddenThinking(Array.isArray(betaHeader) ? betaHeader.join(',') : betaHeader)
+        : null;
+      const traced = traceBody !== null || traceBeta !== null;
+
+      const ctrl = new AbortController();
+      const untrack = state.track(m.id, ctrl);
+      let responseBytes = 0;
+      let status = 502;
+      const usageRef: { meter: UsageMeter | undefined } = { meter: undefined };
+      let recorded = false;
+      const record = () => {
+        if (recorded) return;
+        recorded = true;
+        untrack();
+        const usage = usageRef.meter?.finish() ?? { inputTokens: null, outputTokens: null };
+        s.gateway.recordUsage({
+          ts: started,
+          machineId: m.id,
+          keyId: key.id,
+          keySlug: key.slug,
+          method: request.method,
+          path,
+          model,
+          status,
+          durationMs: Math.max(0, s.clock.now() - started),
+          requestBytes: body?.length ?? 0,
+          responseBytes,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          ip: request.ip,
+        });
+        s.gateway.touchKey(key.id);
+        if (trace) {
+          try {
+            s.tracker.save({
+              ts: started,
+              machineId: m.id,
+              machineName: m.name,
+              ip: request.ip,
+              keySlug: key.slug,
+              cli: key.cli,
+              model,
+              status,
+              durationMs: Math.max(0, s.clock.now() - started),
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              steps: [...requestSteps(body), ...trace.finish(answer.type)],
+              // Read only when one of its switches is on.
+              ...(s.tracker.options().system || s.tracker.options().tools
+                ? requestContext(body)
+                : {}),
+              ...(({ read, write }) => ({ cacheReadTokens: read, cacheWriteTokens: write }))(
+                trace.cache(),
+              ),
+            });
+          } catch (err) {
+            request.log.warn({ err: (err as Error).message }, 'agent tracker could not save');
+          }
+        }
+      };
+      let answered = false;
+      // The machine hung up: stop paying for an answer nobody will read.
+      reply.raw.on('close', () => {
+        if (!reply.raw.writableFinished) {
+          if (!answered) status = CLIENT_CLOSED;
+          ctrl.abort(new Error('client closed'));
+        }
+        record();
+      });
+
+      let upstream: Awaited<ReturnType<typeof upstreamRequest>>;
+      const send = (b: Buffer | undefined, beta: string | null = null) =>
+        upstreamRequest(`${upstreamBase}${upstreamPath}${query}`, {
+          method: request.method as 'GET',
+          headers: {
+            ...upstreamHeaders(
+              beta === null
+                ? request.headers
+                : { ...request.headers, 'anthropic-beta': beta || undefined },
+              // Every OpenAI-compatible address takes the key as a bearer token.
+              openai ? { ...key, auth: 'bearer' } : key,
+              secret,
+              accountId,
+            ),
+            ...extraHeaders,
+          },
+          ...(b && request.method !== 'GET' ? { body: b } : {}),
+          signal: ctrl.signal,
+          dispatcher,
+        });
+      try {
+        upstream = await send(traceBody ?? body, traceBeta);
+        if (traced && upstream.statusCode === 400) {
+          // This provider doesn't take the setting: send the CLI's request as it was.
+          await upstream.body.dump();
+          upstream = await send(body);
+          // Only when the setting was the problem; a 400 for another reason comes back again.
+          if (upstream.statusCode < 400) thinkingRefused.add(key.id);
+        }
+        if (openai?.plain && upstream.statusCode === 400) {
+          // This provider doesn't take stream_options: send the request as the program wrote it.
+          await upstream.body.dump();
+          upstream = await send(openai.plain);
+        }
+      } catch (err) {
+        record();
+        if (ctrl.signal.aborted) return reply;
+        request.log.warn(
+          { err: (err as Error).message, slug: key.slug },
+          'gateway upstream failed',
+        );
+        return fail(reply, 502, 'api_error', `could not reach ${new URL(upstreamBase).host}.`);
+      }
+
+      answered = true;
+      status = upstream.statusCode;
+      reply.code(status);
+      for (const [name, value] of Object.entries(upstream.headers)) {
+        if (value === undefined || DROP_RESPONSE.has(name.toLowerCase())) continue;
+        reply.header(name, value);
+      }
+      reply.header('cache-control', 'no-store');
+      const contentType = upstream.headers['content-type'];
+      const encoded = upstream.headers['content-encoding'];
+      answer.type = Array.isArray(contentType) ? contentType[0] : contentType;
+      usageRef.meter =
+        encoded && encoded !== 'identity'
+          ? undefined
+          : new UsageMeter(Array.isArray(contentType) ? contentType[0] : contentType);
+      const tap = new Transform({
+        transform(chunk: Buffer, _enc, cb) {
+          responseBytes += chunk.length;
+          usageRef.meter?.push(chunk);
+          if (!encoded || encoded === 'identity') trace?.push(chunk);
+          cb(null, chunk);
+        },
+      });
+      tap.on('end', record);
+      tap.on('error', record);
+      upstream.body.on('error', (err) => tap.destroy(err));
+      return reply.send(upstream.body.pipe(tap));
+    };
+
     app.route({
       method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
       url: '/gw/:slug/*',
@@ -760,308 +1103,145 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         const key = s.gateway.keyBySlug(slug);
         if (!key) return fail(reply, 404, 'not_found_error', `there is no key called “${slug}”.`);
         const body = Buffer.isBuffer(request.body) ? request.body : undefined;
-        const model = requestModel(body, path);
-        /**
-         * Puts a request agentbox answered itself (a limit, a locked vault) in the
-         * logs. A machine that keeps getting refused gets one row a minute per reason.
-         */
-        const logRefused = (status: number) => {
-          if (!state.shouldAudit(`${m.id}:refused:${String(status)}`, s.clock.now(), MINUTE))
-            return;
-          s.gateway.recordUsage({
-            ts: started,
-            machineId: m.id,
-            keyId: key.id,
-            keySlug: key.slug,
-            method: request.method,
-            path,
-            model,
-            status,
-            durationMs: Math.max(0, s.clock.now() - started),
-            requestBytes: body?.length ?? 0,
-            responseBytes: 0,
-            inputTokens: null,
-            outputTokens: null,
-            ip: request.ip,
-          });
-        };
-        const refuse: typeof fail = (r, status, ...rest) => {
-          logRefused(status);
-          return fail(r, status, ...rest);
-        };
-        if (!m.keyIds.includes(key.id)) {
-          return refuse(
-            reply,
-            403,
-            'permission_error',
-            `this machine may not use the “${slug}” key. Allow it in agentbox → Machines.`,
-          );
-        }
-
-        const now = s.clock.now();
-        const wait = state.take(m.id, m.rpm, now);
-        if (wait > 0) {
-          if (state.shouldAudit(`${m.id}:rpm`, now)) {
-            s.audit.record({
-              actor: `machine:${m.id}`,
-              action: 'machine.limit_hit',
-              targetType: 'machine',
-              targetId: m.id,
-              ip: request.ip,
-              details: { limit: 'requests_per_minute', value: m.rpm },
-            });
-          }
-          return refuse(
-            reply,
-            429,
-            'rate_limit_error',
-            `speed limit reached (${m.rpm} requests a minute for this machine).`,
-            wait,
-          );
-        }
-        if (state.liveCount(m.id) >= MAX_CONCURRENT_PER_MACHINE) {
-          return refuse(
-            reply,
-            429,
-            'rate_limit_error',
-            'too many requests at once from this machine.',
-            2,
-          );
-        }
-        if (m.dailyTokenLimit !== null) {
-          const today = s.gateway.usageToday(m.id);
-          if (today.inputTokens + today.outputTokens >= m.dailyTokenLimit) {
-            if (state.shouldAudit(`${m.id}:daily`, now)) {
-              s.audit.record({
-                actor: `machine:${m.id}`,
-                action: 'machine.limit_hit',
-                targetType: 'machine',
-                targetId: m.id,
-                ip: request.ip,
-                details: { limit: 'daily_tokens', value: m.dailyTokenLimit },
-              });
-            }
-            return refuse(
-              reply,
-              429,
-              'rate_limit_error',
-              `daily token limit reached for this machine (${m.dailyTokenLimit.toLocaleString('en')}). It resets at 00:00 UTC.`,
-              3600,
-            );
-          }
-        }
-
-        seen(m, request);
-
-        let secret: string;
-        let accountId: string | undefined;
-        let upstreamBase = key.upstream;
-        let upstreamPath = path;
-        let extraHeaders: Record<string, string> = {};
-        if (key.auth === 'grok-login') {
-          if (path === '/_session' && request.method === 'GET')
-            return grokSession(request, reply, m);
-          if (path === '/_token') {
-            // Older setups fetched the xAI token itself; that let it outlive Stop.
-            return refuse(
-              reply,
-              403,
-              'permission_error',
-              'agentbox changed how Grok signs in on other computers. Run `agentbox-machine refresh` on this computer.',
-            );
-          }
-          const token = await vaultGrokToken(reply);
-          if (typeof token !== 'string') {
-            logRefused(reply.statusCode);
-            return token;
-          }
-          secret = token;
-          // Keys added before this change stored xAI's sign-in address instead.
-          if (upstreamBase === 'https://auth.x.ai') upstreamBase = GROK_CHAT_PROXY;
-        } else if (key.auth === 'codex-login') {
-          const login = await vaultCodexToken(reply);
-          if (!('token' in login)) {
-            logRefused(reply.statusCode);
-            return login;
-          }
-          secret = login.token;
-          accountId = login.accountId;
-          // The machine's codex uses <gateway>/v1 like any OpenAI-style provider;
-          // ChatGPT's Codex backend has no /v1 (…/backend-api/codex/responses).
-          if (upstreamPath.startsWith('/v1/')) upstreamPath = upstreamPath.slice(3);
-        } else if (key.auth === 'opencode-login' && path.startsWith(OPENCODE_PROVIDER_PATH)) {
-          // A provider set up in OpenCode on agentbox: /p/<its id>/<its path>.
-          const rest = path.slice(OPENCODE_PROVIDER_PATH.length);
-          const cut = rest.indexOf('/');
-          const id = cut < 0 ? rest : rest.slice(0, cut);
-          const found = await vaultOpencodeProvider(id, reply);
-          if (!('baseURL' in found)) {
-            logRefused(reply.statusCode);
-            return found;
-          }
-          upstreamBase = found.baseURL;
-          upstreamPath = cut < 0 ? '' : rest.slice(cut);
-          secret = found.key ?? '';
-          extraHeaders = Object.fromEntries(
-            Object.entries(found.headers).map(([k, v]) => [k.toLowerCase(), v]),
-          );
-        } else if (key.auth === 'opencode-login') {
-          const found = await vaultOpencodeKey(reply);
-          if (typeof found !== 'string') {
-            logRefused(reply.statusCode);
-            return found;
-          }
-          secret = found;
-        } else {
-          secret = s.gateway.revealSecret(key);
-        }
-
-        // Agent tracker (off unless you turn it on): what was asked and answered.
-        const trace =
-          s.tracker.enabled() && isModelCall(request.method, path) ? new TraceCollector() : null;
-        const answer: { type: string | undefined } = { type: undefined };
-        // The tracker asks the provider for readable thinking; the CLI's own settings stay as they were.
-        const askThinking =
-          trace !== null &&
-          request.method === 'POST' &&
-          !request.headers['content-encoding'] &&
-          !thinkingRefused.has(key.id);
-        const traceBody = askThinking ? withVisibleThinking(body) : null;
-        const betaHeader = request.headers['anthropic-beta'];
-        const traceBeta = askThinking
-          ? withoutHiddenThinking(Array.isArray(betaHeader) ? betaHeader.join(',') : betaHeader)
-          : null;
-        const traced = traceBody !== null || traceBeta !== null;
-
-        const ctrl = new AbortController();
-        const untrack = state.track(m.id, ctrl);
-        let responseBytes = 0;
-        let status = 502;
-        const usageRef: { meter: UsageMeter | undefined } = { meter: undefined };
-        let recorded = false;
-        const record = () => {
-          if (recorded) return;
-          recorded = true;
-          untrack();
-          const usage = usageRef.meter?.finish() ?? { inputTokens: null, outputTokens: null };
-          s.gateway.recordUsage({
-            ts: started,
-            machineId: m.id,
-            keyId: key.id,
-            keySlug: key.slug,
-            method: request.method,
-            path,
-            model,
-            status,
-            durationMs: Math.max(0, s.clock.now() - started),
-            requestBytes: body?.length ?? 0,
-            responseBytes,
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            ip: request.ip,
-          });
-          s.gateway.touchKey(key.id);
-          if (trace) {
-            try {
-              s.tracker.save({
-                ts: started,
-                machineId: m.id,
-                machineName: m.name,
-                ip: request.ip,
-                keySlug: key.slug,
-                cli: key.cli,
-                model,
-                status,
-                durationMs: Math.max(0, s.clock.now() - started),
-                inputTokens: usage.inputTokens,
-                outputTokens: usage.outputTokens,
-                steps: [...requestSteps(body), ...trace.finish(answer.type)],
-                // Read only when one of its switches is on.
-                ...(s.tracker.options().system || s.tracker.options().tools
-                  ? requestContext(body)
-                  : {}),
-                ...(({ read, write }) => ({ cacheReadTokens: read, cacheWriteTokens: write }))(
-                  trace.cache(),
-                ),
-              });
-            } catch (err) {
-              request.log.warn({ err: (err as Error).message }, 'agent tracker could not save');
-            }
-          }
-        };
-        let answered = false;
-        // The machine hung up: stop paying for an answer nobody will read.
-        reply.raw.on('close', () => {
-          if (!reply.raw.writableFinished) {
-            if (!answered) status = CLIENT_CLOSED;
-            ctrl.abort(new Error('client closed'));
-          }
-          record();
-        });
-
-        let upstream: Awaited<ReturnType<typeof upstreamRequest>>;
-        const send = (b: Buffer | undefined, beta: string | null = null) =>
-          upstreamRequest(`${upstreamBase}${upstreamPath}${query}`, {
-            method: request.method as 'GET',
-            headers: {
-              ...upstreamHeaders(
-                beta === null
-                  ? request.headers
-                  : { ...request.headers, 'anthropic-beta': beta || undefined },
-                key,
-                secret,
-                accountId,
-              ),
-              ...extraHeaders,
-            },
-            ...(b && request.method !== 'GET' ? { body: b } : {}),
-            signal: ctrl.signal,
-            dispatcher,
-          });
-        try {
-          upstream = await send(traceBody ?? body, traceBeta);
-          if (traced && upstream.statusCode === 400) {
-            // This provider doesn't take the setting: send the CLI's request as it was.
-            await upstream.body.dump();
-            upstream = await send(body);
-            // Only when the setting was the problem; a 400 for another reason comes back again.
-            if (upstream.statusCode < 400) thinkingRefused.add(key.id);
-          }
-        } catch (err) {
-          record();
-          if (ctrl.signal.aborted) return reply;
-          request.log.warn({ err: (err as Error).message, slug }, 'gateway upstream failed');
-          return fail(reply, 502, 'api_error', `could not reach ${new URL(upstreamBase).host}.`);
-        }
-
-        answered = true;
-        status = upstream.statusCode;
-        reply.code(status);
-        for (const [name, value] of Object.entries(upstream.headers)) {
-          if (value === undefined || DROP_RESPONSE.has(name.toLowerCase())) continue;
-          reply.header(name, value);
-        }
-        reply.header('cache-control', 'no-store');
-        const contentType = upstream.headers['content-type'];
-        const encoded = upstream.headers['content-encoding'];
-        answer.type = Array.isArray(contentType) ? contentType[0] : contentType;
-        usageRef.meter =
-          encoded && encoded !== 'identity'
-            ? undefined
-            : new UsageMeter(Array.isArray(contentType) ? contentType[0] : contentType);
-        const tap = new Transform({
-          transform(chunk: Buffer, _enc, cb) {
-            responseBytes += chunk.length;
-            usageRef.meter?.push(chunk);
-            if (!encoded || encoded === 'identity') trace?.push(chunk);
-            cb(null, chunk);
-          },
-        });
-        tap.on('end', record);
-        tap.on('error', record);
-        upstream.body.on('error', (err) => tap.destroy(err));
-        return reply.send(upstream.body.pipe(tap));
+        return forward(request, reply, { m, key, started, path, query, body });
       },
     });
+
+    // ── One OpenAI-compatible API for all your keys: <origin>/v1/… ───────────
+
+    const passKeys = (m: MachineRow) =>
+      s.gateway.activeKeys().filter((k) => m.keyIds.includes(k.id));
+    const modelCache = new Map<string, { at: number; ids: string[] }>();
+
+    /** The models a key's provider lists, asked at most every 10 minutes. Empty if it won't say. */
+    const providerModels = async (key: AiKeyRow, base: string): Promise<string[]> => {
+      const cacheKey = `${key.id}:${key.upstream}:${key.hint}`;
+      const now = s.clock.now();
+      const hit = modelCache.get(cacheKey);
+      if (hit && now - hit.at < 10 * MINUTE) return hit.ids;
+      let ids: string[] = [];
+      try {
+        const secret = s.gateway.revealSecret(key);
+        // Anthropic lists models on its own API, which wants its own headers.
+        const headers: Record<string, string> =
+          key.auth === 'x-api-key'
+            ? { 'x-api-key': secret, 'anthropic-version': '2023-06-01' }
+            : { authorization: `Bearer ${secret}` };
+        const res = await upstreamRequest(`${base}/models`, {
+          method: 'GET',
+          headers: { ...headers, accept: 'application/json', 'accept-encoding': 'identity' },
+          signal: AbortSignal.timeout(8000),
+          dispatcher,
+        });
+        if (res.statusCode === 200) ids = modelIds(await res.body.json());
+        else await res.body.dump();
+      } catch {
+        // The provider didn't answer; the key's own model is still listed.
+      }
+      modelCache.set(cacheKey, { at: now, ids });
+      return ids;
+    };
+
+    /** The pass, its limits and its schedule, as for the CLIs. */
+    const openaiCaller = (request: FastifyRequest, reply: FastifyReply) => {
+      const m = authenticate(request, reply, undefined);
+      if (!('id' in m)) return m;
+      s.lockouts.succeed(`gateway:ip:${request.ip}`);
+      return m;
+    };
+
+    app.get('/v1/models', { config: { rateLimit: false } }, async (request, reply) => {
+      const m = openaiCaller(request, reply);
+      if (!('id' in m)) return m;
+      const wait = state.take(m.id, m.rpm, s.clock.now());
+      if (wait > 0) {
+        return fail(
+          reply,
+          429,
+          'rate_limit_error',
+          `speed limit reached (${m.rpm} requests a minute for this machine).`,
+          wait,
+        );
+      }
+      seen(m, request);
+      const created = Math.floor(s.clock.now() / 1000);
+      const routes = passKeys(m).map((k) => ({ k, r: openaiRoute(k) }));
+      const lists = await Promise.all(
+        routes.map(({ k, r }) => ('base' in r ? providerModels(k, r.base) : Promise.resolve([]))),
+      );
+      const data: OpenaiModel[] = [];
+      const seenIds = new Set<string>();
+      const add = (id: string, owner: string) => {
+        if (seenIds.has(id)) return;
+        seenIds.add(id);
+        data.push({ id, object: 'model', created, owned_by: owner });
+      };
+      routes.forEach(({ k, r }, i) => {
+        if (!('base' in r)) return;
+        if (k.model) add(`${k.slug}/${k.model}`, k.slug);
+        for (const id of lists[i] ?? []) add(`${k.slug}/${id}`, k.slug);
+      });
+      reply.header('cache-control', 'no-store');
+      return reply.send({ object: 'list', data });
+    });
+
+    app.post(
+      '/v1/*',
+      { bodyLimit: GATEWAY_BODY_LIMIT, config: { rateLimit: false } },
+      async (request, reply) => {
+        const started = s.clock.now();
+        const rawPath = (request.raw.url ?? '').split('?')[0] ?? '';
+        const sub = rawPath.slice('/v1'.length);
+        if (!OPENAI_PATHS.has(sub)) {
+          return fail(
+            reply,
+            404,
+            'not_found_error',
+            `the OpenAI-compatible API has no ${rawPath.slice(0, 100)}. It offers /v1/models, ${[...OPENAI_PATHS].map((p) => `/v1${p}`).join(', ')}.`,
+          );
+        }
+        const m = openaiCaller(request, reply);
+        if (!('id' in m)) return m;
+        const raw = Buffer.isBuffer(request.body) ? request.body : undefined;
+        let parsed: Record<string, unknown> | null = null;
+        try {
+          const v: unknown = JSON.parse(raw?.toString('utf8') ?? '');
+          if (v && typeof v === 'object' && !Array.isArray(v))
+            parsed = v as Record<string, unknown>;
+        } catch {
+          // Answered below.
+        }
+        if (!parsed) return fail(reply, 400, 'invalid_request_error', 'send the request as JSON.');
+        const choice = chooseKey(
+          parsed['model'],
+          passKeys(m),
+          new Set(s.gateway.activeKeys().map((k) => k.slug)),
+        );
+        if ('error' in choice) {
+          return fail(
+            reply,
+            choice.status,
+            choice.status === 400
+              ? 'invalid_request_error'
+              : choice.status === 403
+                ? 'permission_error'
+                : 'not_found_error',
+            choice.error,
+          );
+        }
+        const route = openaiRoute(choice.key);
+        if ('refused' in route) return fail(reply, 403, 'permission_error', route.refused);
+        const { body, plain } = providerBody(parsed, choice.model, sub);
+        return forward(request, reply, {
+          m,
+          key: choice.key,
+          started,
+          path: rawPath,
+          query: '',
+          body,
+          openai: { base: route.base, path: sub, plain },
+        });
+      },
+    );
   };
 }
