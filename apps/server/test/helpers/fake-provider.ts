@@ -27,6 +27,12 @@ export class FakeProvider {
   rejectDisplay = false;
   /** When set, chat completions refuse stream_options (like a provider that doesn't know it). */
   rejectStreamOptions = false;
+  /** /late waits this long before its headers (like a big prompt or long thinking). */
+  lateMs = 0;
+  /** When set, /late then answers with this error instead of a stream. */
+  lateError: { status: number; body: string } | null = null;
+  /** /quiet sends one event, then nothing for this long, then the end. */
+  quietMs = 0;
   #server: Server;
   url = '';
 
@@ -208,6 +214,32 @@ export class FakeProvider {
           res.on('close', () => {
             clearInterval(timer);
             this.slowClosed = true;
+          });
+          return;
+        }
+        if (path === '/late') {
+          const timer = setTimeout(() => {
+            if (this.lateError) {
+              res.writeHead(this.lateError.status, { 'content-type': 'application/json' });
+              res.end(this.lateError.body);
+              return;
+            }
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+          }, this.lateMs);
+          res.on('close', () => {
+            clearTimeout(timer);
+          });
+          return;
+        }
+        if (path === '/quiet') {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.write('event: message_start\ndata: {"type":"message_start"}\n\n');
+          const timer = setTimeout(() => {
+            res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+          }, this.quietMs);
+          res.on('close', () => {
+            clearTimeout(timer);
           });
           return;
         }

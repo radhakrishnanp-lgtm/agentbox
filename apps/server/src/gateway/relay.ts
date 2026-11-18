@@ -11,6 +11,14 @@
  * from the browser CSRF checks, and every request must carry a pass.
  */
 import { Transform } from 'node:stream';
+import {
+  isEventStream,
+  keepAliveTiming,
+  KEEPALIVE_COMMENT,
+  SseKeepAlive,
+  sseErrorEvent,
+  wantsEventStream,
+} from './keepalive.ts';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { request as upstreamRequest, Agent } from 'undici';
 import {
@@ -998,14 +1006,43 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
         }
       };
       let answered = false;
+      // Slow answers through Cloudflare: see keepalive.ts. When the provider
+      // hasn't answered a streaming request after a while, agentbox answers 200
+      // with an event stream itself and keeps it alive until the provider does.
+      const sse = wantsEventStream(request.method, upstreamPath, request.headers.accept, body);
+      // An object, so TypeScript sees the timer change it.
+      const early = { on: false };
+      let earlyPing: NodeJS.Timeout | undefined;
+      const earlyTimer = sse
+        ? setTimeout(() => {
+            if (answered || ctrl.signal.aborted || reply.raw.headersSent) return;
+            early.on = true;
+            void reply.hijack();
+            reply.raw.writeHead(200, {
+              'content-type': 'text/event-stream; charset=utf-8',
+              'cache-control': 'no-store',
+              'x-accel-buffering': 'no',
+            });
+            reply.raw.write(KEEPALIVE_COMMENT);
+            earlyPing = setInterval(() => {
+              if (!reply.raw.writableEnded) reply.raw.write(KEEPALIVE_COMMENT);
+            }, keepAliveTiming.idleMs);
+          }, keepAliveTiming.firstByteMs)
+        : undefined;
+      const stopEarlyTimers = () => {
+        clearTimeout(earlyTimer);
+        clearInterval(earlyPing);
+      };
       // The machine hung up: stop paying for an answer nobody will read.
       reply.raw.on('close', () => {
+        stopEarlyTimers();
         if (!reply.raw.writableFinished) {
           if (!answered) status = CLIENT_CLOSED;
           ctrl.abort(new Error('client closed'));
         }
         record();
       });
+      const upstreamHost = new URL(upstreamBase).host;
 
       let upstream: Awaited<ReturnType<typeof upstreamRequest>>;
       const send = (b: Buffer | undefined, beta: string | null = null) =>
@@ -1042,17 +1079,35 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
           upstream = await send(openai.plain);
         }
       } catch (err) {
+        stopEarlyTimers();
         record();
         if (ctrl.signal.aborted) return reply;
         request.log.warn(
           { err: (err as Error).message, slug: key.slug },
           'gateway upstream failed',
         );
-        return fail(reply, 502, 'api_error', `could not reach ${new URL(upstreamBase).host}.`);
+        if (early.on) {
+          reply.raw.end(sseErrorEvent(502, `could not reach ${upstreamHost}.`, upstreamHost));
+          return reply;
+        }
+        return fail(reply, 502, 'api_error', `could not reach ${upstreamHost}.`);
       }
 
+      stopEarlyTimers();
       answered = true;
       status = upstream.statusCode;
+      if (early.on && status >= 400) {
+        // The 200 already went out: pass the provider's error on as an event.
+        let text = '';
+        try {
+          text = await upstream.body.text();
+        } catch {
+          // Nothing readable came back; the status still says what happened.
+        }
+        if (!reply.raw.writableEnded) reply.raw.end(sseErrorEvent(status, text, upstreamHost));
+        record();
+        return reply;
+      }
       reply.code(status);
       for (const [name, value] of Object.entries(upstream.headers)) {
         if (value === undefined || DROP_RESPONSE.has(name.toLowerCase())) continue;
@@ -1077,7 +1132,19 @@ export function gatewayRoutes(s: Services): FastifyPluginAsync {
       tap.on('end', record);
       tap.on('error', record);
       upstream.body.on('error', (err) => tap.destroy(err));
-      return reply.send(upstream.body.pipe(tap));
+      const piped = upstream.body.pipe(tap);
+      // Keep quiet streams (long thinking, reasoning models) alive between events.
+      const out =
+        sse && (!encoded || encoded === 'identity') && (early.on || isEventStream(contentType))
+          ? piped.pipe(new SseKeepAlive(keepAliveTiming.idleMs))
+          : piped;
+      if (out !== piped) tap.on('error', (err) => out.destroy(err));
+      if (early.on) {
+        out.on('error', () => reply.raw.destroy());
+        out.pipe(reply.raw);
+        return reply;
+      }
+      return reply.send(out);
     };
 
     app.route({

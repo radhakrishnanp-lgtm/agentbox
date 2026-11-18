@@ -6,6 +6,7 @@
  * - The session is re-checked every 30 s, and the connection is cut the moment
  *   the session ends (sign-out, revoke, timeout).
  * - Keystrokes count as activity; input is capped at 256 KB/s.
+ * - A ping every 25 s keeps quiet terminals open through Cloudflare.
  * - Output is paused while the browser has too much undrawn output (acks): termd
  *   then stops reading the terminal, so typing never waits behind a backlog.
  */
@@ -36,6 +37,11 @@ export const WS_CLOSE = {
 } as const;
 
 const RECHECK_MS = 30_000;
+/**
+ * A quiet terminal (a CLI thinking for minutes) sends nothing. Cloudflare and
+ * other proxies close a WebSocket after about 100 s without traffic, so ping it.
+ */
+export const PING_MS = 25_000;
 
 const clientMessage: z.ZodType<TerminalClientMessage> = z.discriminatedUnion('t', [
   z.object({
@@ -142,6 +148,7 @@ async function bridge(s: Services, ws: WebSocket, o: BridgeOptions): Promise<voi
     if (done) return;
     done = true;
     clearInterval(recheck);
+    clearInterval(ping);
     stopListening();
     term.destroy();
     closeWith(code, reason);
@@ -150,6 +157,9 @@ async function bridge(s: Services, ws: WebSocket, o: BridgeOptions): Promise<voi
   const recheck = setInterval(() => {
     if (!s.sessions.check(o.sessionId)) finish(WS_CLOSE.signedOut, 'Your session ended.');
   }, RECHECK_MS);
+  const ping = setInterval(() => {
+    if (ws.readyState === ws.OPEN) ws.ping();
+  }, PING_MS);
   const stopListening = s.sessions.onEnd((ended) => {
     if (ended === o.sessionId) finish(WS_CLOSE.signedOut, 'Your session ended.');
   });
