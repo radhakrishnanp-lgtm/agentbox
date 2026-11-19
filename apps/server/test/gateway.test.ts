@@ -11,6 +11,12 @@ import {
 } from '@agentbox/shared';
 import { aiKey, auditLog, gatewayUsage, machine as machineTable } from '../src/db/schema.ts';
 import { ANTHROPIC_OAUTH_BETA, cleanQuery, safePath } from '../src/gateway/relay.ts';
+import {
+  KEEPALIVE_COMMENT,
+  keepAliveTiming,
+  sseErrorEvent,
+  wantsEventStream,
+} from '../src/gateway/keepalive.ts';
 import { renderMachineScript } from '../src/gateway/script.ts';
 import { addressRule, ipAllowed } from '../src/gateway/store.ts';
 import { UsageMeter } from '../src/gateway/usage.ts';
@@ -1516,6 +1522,122 @@ describe('live streams', () => {
     expect(await pending).toBe('aborted');
     await expect.poll(() => provider.hangClosed).toBe(true);
     await expect.poll(() => h.services.gateway.recentUsage(5)[0]?.status).toBe(499);
+  });
+});
+
+describe('slow answers through Cloudflare (keepalive)', () => {
+  const saved = { ...keepAliveTiming };
+  beforeEach(() => {
+    keepAliveTiming.firstByteMs = 100;
+    keepAliveTiming.idleMs = 60;
+  });
+  afterEach(() => {
+    Object.assign(keepAliveTiming, saved);
+  });
+
+  async function listen() {
+    await h.app.listen({ host: '127.0.0.1', port: 0 });
+    const address = h.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('no address');
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  async function post(base: string, pass: string, path: string, body: object) {
+    const res = await httpRequest(`${base}/gw/anthropic${path}`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': pass,
+        'x-forwarded-for': MACHINE_IP,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    return { status: res.statusCode, headers: res.headers, text: await res.body.text() };
+  }
+
+  it('knows which requests stream, and leaves Gemini alone', () => {
+    const json = (v: object) => Buffer.from(JSON.stringify(v));
+    expect(wantsEventStream('POST', '/v1/messages', undefined, json({ stream: true }))).toBe(true);
+    expect(wantsEventStream('POST', '/v1/responses', undefined, json({ stream: false }))).toBe(
+      false,
+    );
+    expect(wantsEventStream('POST', '/v1/chat', 'text/event-stream', undefined)).toBe(true);
+    expect(wantsEventStream('GET', '/v1/models', 'text/event-stream', undefined)).toBe(false);
+    expect(
+      wantsEventStream(
+        'POST',
+        '/v1beta/models/gemini-2.5-pro:streamGenerateContent',
+        'text/event-stream',
+        json({ stream: true }),
+      ),
+    ).toBe(false);
+    expect(wantsEventStream('POST', '/v1/messages', undefined, Buffer.from('{oops'))).toBe(false);
+  });
+
+  it('answers a slow streaming request at once and keeps it alive until the provider does', async () => {
+    provider.lateMs = 400;
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id]);
+    const base = await listen();
+    const res = await post(base, pass, '/late', { ...messages, stream: true });
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(res.text.startsWith(KEEPALIVE_COMMENT)).toBe(true);
+    expect(res.text.split(KEEPALIVE_COMMENT).length).toBeGreaterThan(2);
+    expect(res.text.endsWith('event: message_stop\ndata: {"type":"message_stop"}\n\n')).toBe(true);
+    await expect.poll(() => h.services.gateway.recentUsage(1, machine.id)[0]?.status).toBe(200);
+  });
+
+  it('passes a late provider error on as an error event the SDKs understand', async () => {
+    provider.lateMs = 250;
+    provider.lateError = {
+      status: 529,
+      body: JSON.stringify({
+        type: 'error',
+        error: { type: 'overloaded_error', message: 'Overloaded' },
+      }),
+    };
+    const key = await addKey();
+    const { pass, machine } = await addMachine([key.id]);
+    const base = await listen();
+    const res = await post(base, pass, '/late', { ...messages, stream: true });
+    expect(res.status).toBe(200);
+    expect(res.text).toContain(
+      'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+    );
+    await expect.poll(() => h.services.gateway.recentUsage(1, machine.id)[0]?.status).toBe(529);
+  });
+
+  it('adds keepalives only between events while a stream is quiet', async () => {
+    provider.quietMs = 300;
+    const key = await addKey();
+    const { pass } = await addMachine([key.id]);
+    const base = await listen();
+    const res = await post(base, pass, '/quiet', { ...messages, stream: true });
+    expect(res.status).toBe(200);
+    const parts = res.text.split(KEEPALIVE_COMMENT);
+    expect(parts.length).toBeGreaterThan(2);
+    expect(parts[0]).toBe('event: message_start\ndata: {"type":"message_start"}\n\n');
+    expect(parts.at(-1)).toBe('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+  });
+
+  it('leaves non-streaming requests exactly as they were', async () => {
+    provider.lateMs = 250;
+    const key = await addKey();
+    const { pass } = await addMachine([key.id]);
+    const base = await listen();
+    const res = await post(base, pass, '/late', messages);
+    expect(res.text).not.toContain('keepalive');
+    expect(res.text.startsWith('event: message_stop')).toBe(true);
+  });
+
+  it('shapes errors like Anthropic mid-stream errors, whatever came back', () => {
+    expect(sseErrorEvent(502, 'Bad Gateway', 'api.example.com')).toBe(
+      'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"api.example.com answered 502: Bad Gateway"}}\n\n',
+    );
+    expect(
+      sseErrorEvent(429, JSON.stringify({ error: { message: 'slow down', code: 'rate' } }), 'x'),
+    ).toContain('"type":"rate_limit_error","message":"slow down"');
   });
 });
 

@@ -253,6 +253,21 @@ Things to know:
 - When agentbox is updated, run `agentbox-machine refresh` on each computer to get the newest wrappers.
 - The Windows wrappers set the same variables as the Linux and macOS ones. They are tested with PowerShell 7 and wine's Command Prompt against stand-in CLIs, not yet on a real Windows computer with the real CLIs.
 
+## Cloudflare and other proxies in front of agentbox
+
+If your domain goes through Cloudflare's proxy (orange cloud), Cloudflare drops a request when agentbox sends nothing for 100 seconds. A big prompt, long thinking or a reasoning model can be quiet that long, and the CLI then shows an error such as `API Error: 499 Client Closed Request`, a 524, or an answer that just stops.
+
+agentbox keeps streaming answers alive for every CLI:
+
+- While the provider is quiet, agentbox sends a small comment line (`: agentbox keepalive`) between events every 20 seconds. Programs ignore these lines, as the event-stream standard says.
+- If the provider hasn't started answering after 30 seconds, agentbox answers the CLI itself and keeps that answer alive until the provider starts. If the provider then refuses (for example "overloaded"), the CLI gets it as a normal error event and retries as usual.
+- Gemini requests are passed through unchanged, because Gemini's SDKs don't expect comment lines.
+- Requests that don't stream are passed through unchanged. Every supported CLI streams its answers.
+
+The browser terminals also send a ping every 25 seconds, so a quiet terminal isn't closed by Cloudflare.
+
+The simplest setup is still **DNS only (grey cloud)** for agentbox's own record. Then there's no 100-second limit at all, and the certificate renews without help.
+
 ## For other tools
 
 Any tool that lets you set an API base address and key works too:

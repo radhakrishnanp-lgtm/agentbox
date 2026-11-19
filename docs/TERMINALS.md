@@ -62,6 +62,7 @@ browser ──wss──▶ agentbox-web ──unix socket──▶ agentbox-term
 
 - `agentbox-web` checks the session and device on connect, re-checks every 30 seconds, and cuts the connection the moment you sign out or the session ends. Typing counts as activity for the idle timeout. Connections must come from agentbox's own origin, at most 10 a minute, and input is capped at 256 KB/s.
 - `agentbox-termd` runs as `dev` and holds no agentbox secrets. It passes session names and preset commands to tmux as single arguments, never through a shell.
+- A ping every 25 seconds keeps a quiet terminal connected through Cloudflare and other proxies, which close a WebSocket after about 100 seconds without traffic.
 - Terminals start with a clean environment: nothing from the services' own environment (keys, secrets) leaks in.
 - Restarting or updating agentbox keeps sessions running and the vault unlocked.
 
